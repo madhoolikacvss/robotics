@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """
-Path tracker for waypoint following — Pure Pursuit + Differential-Drive IK.
+Pose-to-pose path tracker: drives to each waypoint (x,y), then rotates
+in place to the waypoint's yaw. Advances when both tolerances are met.
 
-Subparts combined:
-  2a — State estimator: yaw from IMU (absolute), x/y dead-reckoned from
-       achievable commanded velocity.
-  2b — Pure Pursuit controller over the waypoint polyline.
-  2c — Inverse kinematic matrix using calibrated k_v, k_omega.
+Subparts:
+  2a — State estimator: yaw from IMU, x/y dead-reckoned from achievable v.
+  2b — Two-phase controller: Pure Pursuit (drive) + P-control (align).
+  2c — Inverse kinematics using calibrated k_v, k_omega.
 
 Run:
     ros2 run robot_control path_tracker
-
-Requires:
-    motor_control.py running (provides /imu_data, consumes /motor_commands)
-    waypoints.txt and calibration.json alongside this file.
 """
 
 import os
@@ -21,6 +17,7 @@ import math
 import json
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import List, Optional, Tuple
 
 import rclpy
@@ -30,7 +27,7 @@ from sensor_msgs.msg import Imu
 
 
 # ============================================================
-# Data structures
+# Data types
 # ============================================================
 
 @dataclass
@@ -44,9 +41,15 @@ class Waypoint:
 class RobotState:
     x: float = 0.0
     y: float = 0.0
-    theta: float = 0.0      # radians, +CCW
-    v: float = 0.0          # last achievable linear velocity (m/s)
-    omega: float = 0.0      # last commanded angular velocity (rad/s)
+    theta: float = 0.0
+    v: float = 0.0
+    omega: float = 0.0
+
+
+class Phase(Enum):
+    DRIVE = 1
+    ALIGN = 2
+    DONE = 3
 
 
 # ============================================================
@@ -86,9 +89,7 @@ def default_calibration_path() -> str:
 def load_calibration(filepath: Optional[str] = None) -> dict:
     path = filepath or default_calibration_path()
     if not os.path.isfile(path):
-        raise FileNotFoundError(
-            f"No calibration file at {path}. Run the calibrate node first."
-        )
+        raise FileNotFoundError(f"No calibration file at {path}. Run calibration first.")
     with open(path) as f:
         cal = json.load(f)
     for key in ("k_v", "k_omega"):
@@ -98,11 +99,10 @@ def load_calibration(filepath: Optional[str] = None) -> dict:
 
 
 # ============================================================
-# Frame transforms (the "matrix calibration" from Subpart 1)
+# Math helpers
 # ============================================================
 
 def world_to_body(state: RobotState, wx: float, wy: float) -> Tuple[float, float]:
-    """World -> Body. R(theta)^T applied to (target - robot)."""
     dx = wx - state.x
     dy = wy - state.y
     c, s = math.cos(state.theta), math.sin(state.theta)
@@ -119,187 +119,180 @@ def angle_wrap(a: float) -> float:
     return math.atan2(math.sin(a), math.cos(a))
 
 
+def angle_diff(a: float, b: float) -> float:
+    """Shortest signed a - b in (-pi, pi]."""
+    d = a - b
+    return math.atan2(math.sin(d), math.cos(d))
+
+
 # ============================================================
-# Subpart 2c — Inverse kinematics (v, omega) -> (u_L, u_R)
+# Subpart 2c — Inverse kinematics
 # ============================================================
 
 def inverse_kinematics(v: float, omega: float,
                        k_v: float, k_omega: float) -> Tuple[float, float]:
-    """
-    Invert:  v = k_v (u_L + u_R),  omega = k_omega (u_R - u_L)
-    Returns clipped (u_L, u_R) in [-0.5, 0.5].
-    """
     u_sum = v / k_v
     u_diff = omega / k_omega
     u_L = (u_sum - u_diff) / 2.0
     u_R = (u_sum + u_diff) / 2.0
-    # motor saturation
     u_L = max(-0.5, min(0.5, u_L))
     u_R = max(-0.5, min(0.5, u_R))
     return u_L, u_R
 
 
 # ============================================================
-# Subpart 2b — Pure Pursuit controller
+# Two-phase pose-to-pose tracker (Subpart 2b)
 # ============================================================
 
-class PurePursuit:
+class PoseTracker:
     """
-    Pure Pursuit over a polyline. Tracks the current segment index and
-    always chases a point L_d meters ahead of the robot's projection.
+    Drives to each waypoint's (x,y) using Pure Pursuit-like pursuit of the
+    current waypoint only, then rotates in place to match the waypoint's yaw.
+    Advances when both position and yaw tolerances are met.
     """
 
     def __init__(self,
                  waypoints: List[Waypoint],
-                 lookahead: float = 0.4,
-                 goal_tol: float = 0.15,
+                 pos_tol: float = 0.12,
+                 yaw_tol: float = 0.12,
                  v_max: float = 0.25,
-                 omega_max: float = 0.8):
+                 omega_max: float = 0.9,
+                 align_kp: float = 1.5):
         self.wps = waypoints
-        self.L_d = lookahead
-        self.goal_tol = goal_tol
+        self.pos_tol = pos_tol
+        self.yaw_tol = yaw_tol
         self.v_max = v_max
         self.omega_max = omega_max
+        self.align_kp = align_kp
 
-        self.seg_idx = 0
+        self.idx = 0                 # current target waypoint index
+        self.phase = Phase.DRIVE
         self.done = False
 
-    def _seg(self, i: int) -> Tuple[Waypoint, Waypoint]:
-        return self.wps[i], self.wps[i + 1]
+        # once a waypoint is reached, we "snap" our belief of (x, y) to it
+        # so per-segment drift doesn't accumulate indefinitely
+        self.snap_on_arrival = True
 
-    def _project_on_segment(self, px, py, i):
-        a, b = self._seg(i)
-        dx, dy = b.x - a.x, b.y - a.y
-        L2 = dx * dx + dy * dy
-        if L2 < 1e-9:
-            return a.x, a.y, 0.0
-        t = ((px - a.x) * dx + (py - a.y) * dy) / L2
-        t = max(0.0, min(1.0, t))
-        return a.x + t * dx, a.y + t * dy, t
+    # -------- accessor --------
+    @property
+    def target(self) -> Waypoint:
+        return self.wps[self.idx]
 
-    def _advance_segment_if_needed(self, state: RobotState):
-        while self.seg_idx < len(self.wps) - 1:
-            _, b = self._seg(self.seg_idx)
-            if math.hypot(b.x - state.x, b.y - state.y) < self.goal_tol:
-                self.seg_idx += 1
-            else:
-                break
-
-    def _lookahead_point(self, state: RobotState) -> Optional[Tuple[float, float]]:
-        remaining = self.L_d
-        i = self.seg_idx
-        while i < len(self.wps) - 1:
-            a, b = self._seg(i)
-            if i == self.seg_idx:
-                proj_x, proj_y, _ = self._project_on_segment(state.x, state.y, i)
-            else:
-                proj_x, proj_y = a.x, a.y
-            seg_len = math.hypot(b.x - proj_x, b.y - proj_y)
-            if seg_len >= remaining:
-                if seg_len < 1e-9:
-                    return b.x, b.y
-                ux = (b.x - proj_x) / seg_len
-                uy = (b.y - proj_y) / seg_len
-                return proj_x + ux * remaining, proj_y + uy * remaining
-            remaining -= seg_len
-            i += 1
-        last = self.wps[-1]
-        return last.x, last.y
-
+    # -------- main entry point --------
     def compute(self, state: RobotState) -> Tuple[float, float]:
-        """Returns (v, omega). Sets self.done=True on arrival at goal."""
+        """Returns (v_cmd, omega_cmd). Modifies `state` on snap. Sets done/phase."""
         if self.done:
             return 0.0, 0.0
 
-        goal = self.wps[-1]
-        d_goal = math.hypot(goal.x - state.x, goal.y - state.y)
-        if d_goal < self.goal_tol:
-            self.done = True
+        if self.phase == Phase.DRIVE:
+            return self._drive(state)
+        elif self.phase == Phase.ALIGN:
+            return self._align(state)
+        else:
             return 0.0, 0.0
 
-        self._advance_segment_if_needed(state)
-        target = self._lookahead_point(state)
-        if target is None:
-            self.done = True
+    # -------- DRIVE phase --------
+    def _drive(self, state: RobotState) -> Tuple[float, float]:
+        wp = self.target
+
+        dx = wp.x - state.x
+        dy = wp.y - state.y
+        d = math.hypot(dx, dy)
+
+        if d < self.pos_tol:
+            # arrived at (x,y). Transition to ALIGN for this waypoint's theta.
+            self.phase = Phase.ALIGN
+            state.x = wp.x   # snap estimate
+            state.y = wp.y
             return 0.0, 0.0
 
-        # Subpart 1's calibration matrix in action:
-        x_b, y_b = world_to_body(state, target[0], target[1])
+        # target in body frame (THE matrix from subpart 1)
+        x_b, y_b = world_to_body(state, wp.x, wp.y)
 
-        # choose forward speed based on alignment
-        heading_err = math.atan2(y_b, x_b) if x_b > 0 else math.pi
+        # heading error = angle to target
+        heading_err = math.atan2(y_b, x_b)
+
+        # slow down when close or when badly misaligned
         v = self.v_max
-        if x_b <= 0.0:
-            v = 0.0                                     # target behind -> rotate in place
-        elif abs(heading_err) > math.radians(45):
-            v = 0.0                                     # turn first, drive later
-        elif abs(heading_err) > math.radians(20):
-            v = 0.4 * self.v_max
-        if d_goal < 0.5:
-            v *= 0.5                                    # ease off near goal
+        if d < 0.5:
+            v *= 0.5
+        if abs(heading_err) > math.radians(60):
+            v = 0.0                    # rotate toward target if way off
+        elif abs(heading_err) > math.radians(30):
+            v *= 0.4
 
-        # curvature and yaw rate
-        L2 = max(self.L_d * self.L_d, 1e-6)
-        kappa = 2.0 * y_b / L2
-        v_ref = v if v > 1e-3 else self.v_max * 0.5     # for in-place turns
+        # curvature toward target. Pure pursuit toward a single point:
+        #   kappa = 2*y_b / d^2  (using d as look-ahead)
+        d2 = max(d * d, 1e-6)
+        kappa = 2.0 * y_b / d2
+        v_ref = v if v > 1e-3 else self.v_max * 0.5
         omega = v_ref * kappa
         omega = max(-self.omega_max, min(self.omega_max, omega))
 
         return v, omega
 
+    # -------- ALIGN phase --------
+    def _align(self, state: RobotState) -> Tuple[float, float]:
+        wp = self.target
+        err = angle_diff(wp.theta, state.theta)
+
+        if abs(err) < self.yaw_tol:
+            # waypoint fully achieved. Advance.
+            self.idx += 1
+            if self.idx >= len(self.wps):
+                self.done = True
+                return 0.0, 0.0
+            self.phase = Phase.DRIVE
+            return 0.0, 0.0
+
+        # P-control on yaw. Sign check: err > 0 means target is CCW of us
+        # -> we want +omega (CCW spin) -> no sign flip.
+        omega = self.align_kp * err
+        omega = max(-self.omega_max, min(self.omega_max, omega))
+        return 0.0, omega     # v = 0 during alignment
+
 
 # ============================================================
-# The ROS2 node — Subparts 2a + 2b + 2c together
+# ROS2 node
 # ============================================================
 
 class PathTrackerNode(Node):
     def __init__(self):
         super().__init__('path_tracker_node')
 
-        # ---- load config ----
         self.wps = load_waypoints(default_waypoint_path())
         cal = load_calibration()
         self.k_v = float(cal['k_v'])
         self.k_omega = float(cal['k_omega'])
         self.get_logger().info(
             f"Loaded {len(self.wps)} waypoints; "
-            f"k_v={self.k_v:.4f} m/s/unit, k_omega={self.k_omega:.4f} rad/s/unit"
+            f"k_v={self.k_v:.4f}, k_omega={self.k_omega:.4f}"
         )
 
-        # ---- state ----
         self.state = RobotState()
         self.have_imu = False
         self.last_update_t: Optional[float] = None
         self.last_achievable_v = 0.0
 
-        # ---- controller ----
-        self.controller = PurePursuit(
+        self.tracker = PoseTracker(
             waypoints=self.wps,
-            lookahead=0.4,          # tuned for ~2 m course
-            goal_tol=0.15,
-            v_max=0.25,             # ~37% of max achievable 0.683; safe headroom
-            omega_max=0.8,
+            pos_tol=0.12,
+            yaw_tol=0.12,
+            v_max=0.25,
+            omega_max=0.9,
+            align_kp=1.5,
         )
 
-        # ---- ROS I/O ----
         self.cmd_pub = self.create_publisher(Float32MultiArray, 'motor_commands', 10)
         self.imu_sub = self.create_subscription(Imu, 'imu_data', self.imu_cb, 10)
-
-        # ---- 20 Hz control loop ----
         self.timer = self.create_timer(0.05, self.control_loop)
 
         self.get_logger().info("Path tracker started. Waiting for IMU...")
 
-    # ------------------------------------------------------------
-    # Subpart 2a — sensor callback
-    # ------------------------------------------------------------
     def imu_cb(self, msg: Imu):
-        """Update absolute yaw from IMU. First message also anchors the state to waypoint 0."""
         self.state.theta = quat_to_yaw(
-            msg.orientation.w,
-            msg.orientation.x,
-            msg.orientation.y,
-            msg.orientation.z,
+            msg.orientation.w, msg.orientation.x,
+            msg.orientation.y, msg.orientation.z,
         )
         if not self.have_imu:
             self.have_imu = True
@@ -308,13 +301,10 @@ class PathTrackerNode(Node):
             self.state.y = wp0.y
             self.last_update_t = time.time()
             self.get_logger().info(
-                f"First IMU. Anchoring to waypoint 0 = "
+                f"IMU online. Anchored to waypoint 0 = "
                 f"({wp0.x:.2f}, {wp0.y:.2f}), yaw = {math.degrees(self.state.theta):+.2f}°"
             )
 
-    # ------------------------------------------------------------
-    # Control loop — runs at 20 Hz
-    # ------------------------------------------------------------
     def control_loop(self):
         if not self.have_imu:
             return
@@ -326,41 +316,39 @@ class PathTrackerNode(Node):
         dt = now - self.last_update_t
         self.last_update_t = now
 
-        # --- Subpart 2a: dead-reckon x,y from last achievable v ---
+        # Subpart 2a — dead-reckon from last achievable v
         self.state.x += self.last_achievable_v * math.cos(self.state.theta) * dt
         self.state.y += self.last_achievable_v * math.sin(self.state.theta) * dt
         self.state.v = self.last_achievable_v
 
-        # --- Subpart 2b: Pure Pursuit -> (v, omega) ---
-        v_cmd, omega_cmd = self.controller.compute(self.state)
+        # Subpart 2b — pose tracker
+        v_cmd, omega_cmd = self.tracker.compute(self.state)
         self.state.omega = omega_cmd
 
-        # --- Subpart 2c: IK -> (u_L, u_R), respecting saturation ---
+        # Subpart 2c — IK
         u_L, u_R = inverse_kinematics(v_cmd, omega_cmd, self.k_v, self.k_omega)
-
-        # remember what we actually asked the wheels to do (post-clip)
         self.last_achievable_v = self.k_v * (u_L + u_R)
 
-        # --- publish ---
         msg = Float32MultiArray()
         msg.data = [float(u_L), float(u_R)]
         self.cmd_pub.publish(msg)
 
-        # --- 1 Hz progress log ---
+        # 1 Hz log
         if not hasattr(self, '_last_log') or now - self._last_log > 1.0:
             self._last_log = now
+            tgt = self.tracker.target
             self.get_logger().info(
+                f"wp={self.tracker.idx}/{len(self.wps)-1} "
+                f"phase={self.tracker.phase.name:5s} "
                 f"x={self.state.x:+.2f} y={self.state.y:+.2f} "
-                f"th={math.degrees(self.state.theta):+6.1f}° "
-                f"seg={self.controller.seg_idx} "
-                f"v_cmd={v_cmd:.2f} v_ach={self.last_achievable_v:.2f} "
-                f"w_cmd={omega_cmd:+.2f} "
+                f"th={math.degrees(self.state.theta):+6.1f}° | "
+                f"tgt=({tgt.x:+.2f},{tgt.y:+.2f},{math.degrees(tgt.theta):+6.1f}°) "
+                f"v={v_cmd:.2f} w={omega_cmd:+.2f} "
                 f"u=({u_L:+.2f},{u_R:+.2f})"
             )
 
-        # --- arrival ---
-        if self.controller.done:
-            self.get_logger().info("Goal reached. Stopping.")
+        if self.tracker.done:
+            self.get_logger().info("All waypoints achieved. Stopping.")
             for _ in range(5):
                 stop = Float32MultiArray()
                 stop.data = [0.0, 0.0]
