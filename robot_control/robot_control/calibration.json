@@ -1,0 +1,12 @@
+{
+  "k_v": 0.6833333333333333,
+  "v_actual": 0.41,
+  "distance": 1.23,
+  "T_lin": 3.0,
+  "u_test": 0.5,
+  "k_omega": 0.6938064724773195,
+  "omega_actual": 0.6938064724773195,
+  "dtheta_deg": 79.50436534361984,
+  "T_ang": 2.0,
+  "imu_sign_ccw_positive": true
+}

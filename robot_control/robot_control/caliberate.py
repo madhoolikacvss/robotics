@@ -9,13 +9,14 @@ Runs two experiments:
 Results written to calibration.json in this package's directory.
 
 Usage:
-    ros2 run robot_control calibrate linear   # Experiment A
-    ros2 run robot_control calibrate angular  # Experiment B
-    ros2 run robot_control calibrate show     # Print stored results
+    ros2 run robot_control caliberate linear   # Experiment A
+    ros2 run robot_control caliberate angular  # Experiment B
+    ros2 run robot_control caliberate show     # Print stored results
 """
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Float32MultiArray
 from sensor_msgs.msg import Imu
 import math
@@ -23,6 +24,7 @@ import time
 import json
 import os
 import argparse
+import threading
 
 # Calibration parameters (edit these if you want different test values)
 V_TEST = 0.3        # matches keyboard 'W' value
@@ -60,6 +62,7 @@ class CalibrationNode(Node):
 
         self.latest_yaw = None       # radians, from IMU
         self.yaw_samples = []        # (timestamp, yaw) for filtering
+        self.imu_lock = threading.Lock()
 
         self.get_logger().info('Calibration node ready.')
 
@@ -70,11 +73,12 @@ class CalibrationNode(Node):
             msg.orientation.y,
             msg.orientation.z,
         )
-        self.latest_yaw = yaw
-        self.yaw_samples.append((time.time(), yaw))
-        # keep only last 5 s of samples
-        cutoff = time.time() - 5.0
-        self.yaw_samples = [(t, y) for t, y in self.yaw_samples if t >= cutoff]
+        with self.imu_lock:
+            self.latest_yaw = yaw
+            self.yaw_samples.append((time.time(), yaw))
+            # keep only last 5 s of samples
+            cutoff = time.time() - 5.0
+            self.yaw_samples = [(t, y) for t, y in self.yaw_samples if t >= cutoff]
 
     def send_wheels(self, u_l, u_r):
         msg = Float32MultiArray()
@@ -145,7 +149,9 @@ class CalibrationNode(Node):
         time.sleep(3.0)
 
         # give IMU a moment to settle, then snapshot starting yaw
-        if self.latest_yaw is None:
+        with self.imu_lock:
+            has_imu_data = self.latest_yaw is not None
+        if not has_imu_data:
             self.get_logger().error("No IMU data received. Is motor_control.py running?")
             return
 
@@ -192,9 +198,11 @@ class CalibrationNode(Node):
     def _average_yaw(self, window_s):
         """Average the last `window_s` seconds of yaw samples, respecting wrapping."""
         cutoff = time.time() - window_s
-        ys = [y for t, y in self.yaw_samples if t >= cutoff]
+        with self.imu_lock:
+            ys = [y for t, y in self.yaw_samples if t >= cutoff]
+            latest_yaw = self.latest_yaw
         if not ys:
-            return self.latest_yaw
+            return latest_yaw
         # average via unit vectors to handle wrap-around correctly
         sx = sum(math.cos(y) for y in ys)
         sy = sum(math.sin(y) for y in ys)
@@ -247,6 +255,10 @@ def main(args=None):
 
     rclpy.init(args=args)
     node = CalibrationNode()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
     try:
         if cli.mode == "linear":
             node.run_linear_experiment()
@@ -257,6 +269,8 @@ def main(args=None):
             node.stop()
         except Exception:
             pass
+        executor.shutdown()
+        spin_thread.join()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
