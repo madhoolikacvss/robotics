@@ -4,9 +4,11 @@ Pose-to-pose path tracker: drives to each waypoint (x,y), then rotates
 in place to the waypoint's yaw. Advances when both tolerances are met.
 
 Subparts:
-  2a — State estimator: yaw from IMU, x/y dead-reckoned from achievable v.
+  2a — State estimator: yaw from IMU (via FrameManager), x/y dead-reckoned.
   2b — Two-phase controller: Pure Pursuit (drive) + P-control (align).
   2c — Inverse kinematics using calibrated k_v, k_omega.
+
+Frames: see frames.py. {I} -> {B} -> {W}. All conversions go through FrameManager.
 
 Run:
     ros2 run robot_control path_tracker
@@ -24,6 +26,9 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 from sensor_msgs.msg import Imu
+
+# FIX 1: import FrameManager so the node can own one.
+from robot_control.frames import FrameManager
 
 
 # ============================================================
@@ -99,15 +104,8 @@ def load_calibration(filepath: Optional[str] = None) -> dict:
 
 
 # ============================================================
-# Math helpers
+# Math helpers (kept for reference / non-frame uses)
 # ============================================================
-
-def world_to_body(state: RobotState, wx: float, wy: float) -> Tuple[float, float]:
-    dx = wx - state.x
-    dy = wy - state.y
-    c, s = math.cos(state.theta), math.sin(state.theta)
-    return c * dx + s * dy, -s * dx + c * dy
-
 
 def quat_to_yaw(qw: float, qx: float, qy: float, qz: float) -> float:
     siny_cosp = 2.0 * (qw * qz + qx * qy)
@@ -146,9 +144,13 @@ def inverse_kinematics(v: float, omega: float,
 
 class PoseTracker:
     """
-    Drives to each waypoint's (x,y) using Pure Pursuit-like pursuit of the
-    current waypoint only, then rotates in place to match the waypoint's yaw.
-    Advances when both position and yaw tolerances are met.
+    Pure-math pose tracker. Frame-agnostic — the node is responsible for
+    converting target coordinates into the body frame BEFORE calling compute().
+
+    compute(state, x_b, y_b):
+        state   : RobotState (only .theta is used for the ALIGN phase; position
+                  used only for the "did we arrive?" check)
+        x_b, y_b: target waypoint expressed in BODY frame
     """
 
     def __init__(self,
@@ -165,64 +167,65 @@ class PoseTracker:
         self.omega_max = omega_max
         self.align_kp = align_kp
 
-        self.idx = 0                 # current target waypoint index
+        self.idx = 0
         self.phase = Phase.DRIVE
         self.done = False
-
-        # once a waypoint is reached, we "snap" our belief of (x, y) to it
-        # so per-segment drift doesn't accumulate indefinitely
         self.snap_on_arrival = True
 
-    # -------- accessor --------
     @property
     def target(self) -> Waypoint:
         return self.wps[self.idx]
 
-    # -------- main entry point --------
-    def compute(self, state: RobotState) -> Tuple[float, float]:
-        """Returns (v_cmd, omega_cmd). Modifies `state` on snap. Sets done/phase."""
+    # ------------------------------------------------------------
+    # FIX 2: accept (state, x_b, y_b). One call per control loop.
+    # ------------------------------------------------------------
+    def compute(self, state: RobotState,
+                x_b: float, y_b: float) -> Tuple[float, float]:
+        """
+        Returns (v_cmd, omega_cmd).
+
+        The target (current waypoint) is provided in BODY frame as (x_b, y_b),
+        already transformed by the node's FrameManager. This keeps the tracker
+        purely geometric.
+        """
         if self.done:
             return 0.0, 0.0
 
         if self.phase == Phase.DRIVE:
-            return self._drive(state)
+            return self._drive(state, x_b, y_b)
         elif self.phase == Phase.ALIGN:
             return self._align(state)
         else:
             return 0.0, 0.0
 
-    # -------- DRIVE phase --------
-    def _drive(self, state: RobotState) -> Tuple[float, float]:
+    def _drive(self, state: RobotState,
+               x_b: float, y_b: float) -> Tuple[float, float]:
         wp = self.target
 
-        dx = wp.x - state.x
-        dy = wp.y - state.y
-        d = math.hypot(dx, dy)
+        # distance to target (from body-frame components)
+        d = math.hypot(x_b, y_b)
 
         if d < self.pos_tol:
-            # arrived at (x,y). Transition to ALIGN for this waypoint's theta.
+            # arrived at (x,y). Snap estimate to waypoint, transition to ALIGN.
             self.phase = Phase.ALIGN
-            state.x = wp.x   # snap estimate
-            state.y = wp.y
+            if self.snap_on_arrival:
+                state.x = wp.x
+                state.y = wp.y
             return 0.0, 0.0
 
-        # target in body frame (THE matrix from subpart 1)
-        x_b, y_b = world_to_body(state, wp.x, wp.y)
-
-        # heading error = angle to target
+        # angle from body +x axis to target (in body frame)
         heading_err = math.atan2(y_b, x_b)
 
-        # slow down when close or when badly misaligned
+        # speed scheduling
         v = self.v_max
         if d < 0.5:
             v *= 0.5
         if abs(heading_err) > math.radians(60):
-            v = 0.0                    # rotate toward target if way off
+            v = 0.0
         elif abs(heading_err) > math.radians(30):
             v *= 0.4
 
-        # curvature toward target. Pure pursuit toward a single point:
-        #   kappa = 2*y_b / d^2  (using d as look-ahead)
+        # Pure Pursuit toward a single point (use d as effective look-ahead)
         d2 = max(d * d, 1e-6)
         kappa = 2.0 * y_b / d2
         v_ref = v if v > 1e-3 else self.v_max * 0.5
@@ -231,13 +234,11 @@ class PoseTracker:
 
         return v, omega
 
-    # -------- ALIGN phase --------
     def _align(self, state: RobotState) -> Tuple[float, float]:
         wp = self.target
         err = angle_diff(wp.theta, state.theta)
 
         if abs(err) < self.yaw_tol:
-            # waypoint fully achieved. Advance.
             self.idx += 1
             if self.idx >= len(self.wps):
                 self.done = True
@@ -245,11 +246,9 @@ class PoseTracker:
             self.phase = Phase.DRIVE
             return 0.0, 0.0
 
-        # P-control on yaw. Sign check: err > 0 means target is CCW of us
-        # -> we want +omega (CCW spin) -> no sign flip.
         omega = self.align_kp * err
         omega = max(-self.omega_max, min(self.omega_max, omega))
-        return 0.0, omega     # v = 0 during alignment
+        return 0.0, omega
 
 
 # ============================================================
@@ -274,6 +273,11 @@ class PathTrackerNode(Node):
         self.last_update_t: Optional[float] = None
         self.last_achievable_v = 0.0
 
+        # FIX 3: instantiate the frame manager.
+        # Set imu_to_body_alpha if the IMU is not axis-aligned with the body.
+        # For yaw-only control alpha cancels, but keep the hook for the report.
+        self.frames = FrameManager(imu_to_body_alpha=0.0)
+
         self.tracker = PoseTracker(
             waypoints=self.wps,
             pos_tol=0.12,
@@ -287,23 +291,36 @@ class PathTrackerNode(Node):
         self.imu_sub = self.create_subscription(Imu, 'imu_data', self.imu_cb, 10)
         self.timer = self.create_timer(0.05, self.control_loop)
 
-        self.get_logger().info("Path tracker started. Waiting for IMU...")
+        self.get_logger().info(
+            "Path tracker started. Align the robot with +x BEFORE launch. "
+            "Waiting for IMU..."
+        )
 
+    # ------------------------------------------------------------
+    # FIX 4: run the IMU reading through the FrameManager
+    # ------------------------------------------------------------
     def imu_cb(self, msg: Imu):
-        self.state.theta = quat_to_yaw(
+        raw_yaw_imu = quat_to_yaw(
             msg.orientation.w, msg.orientation.x,
             msg.orientation.y, msg.orientation.z,
         )
+
         if not self.have_imu:
+            # Establish the world-frame reference on the very first sample.
+            self.frames.set_imu_zero_reference(raw_yaw_imu)
             self.have_imu = True
             wp0 = self.wps[0]
             self.state.x = wp0.x
             self.state.y = wp0.y
             self.last_update_t = time.time()
             self.get_logger().info(
-                f"IMU online. Anchored to waypoint 0 = "
-                f"({wp0.x:.2f}, {wp0.y:.2f}), yaw = {math.degrees(self.state.theta):+.2f}°"
+                f"IMU online. Raw yaw at startup = {math.degrees(raw_yaw_imu):+.2f}° "
+                f"(this defines world yaw 0°). Anchored to waypoint 0 "
+                f"= ({wp0.x:.2f}, {wp0.y:.2f})."
             )
+
+        # Full chain {I} -> {B} -> {W}
+        self.state.theta = self.frames.imu_yaw_to_world(raw_yaw_imu)
 
     def control_loop(self):
         if not self.have_imu:
@@ -316,24 +333,34 @@ class PathTrackerNode(Node):
         dt = now - self.last_update_t
         self.last_update_t = now
 
-        # Subpart 2a — dead-reckon from last achievable v
+        # ---- Subpart 2a: dead-reckon x,y from last achievable v ----
         self.state.x += self.last_achievable_v * math.cos(self.state.theta) * dt
         self.state.y += self.last_achievable_v * math.sin(self.state.theta) * dt
         self.state.v = self.last_achievable_v
 
-        # Subpart 2b — pose tracker
-        v_cmd, omega_cmd = self.tracker.compute(self.state)
+        # ---- Update the Body -> World transform with the current pose ----
+        self.frames.update_world_pose(self.state.x, self.state.y, self.state.theta)
+
+        # ---- Express the target waypoint in BODY frame ----
+        wp = self.tracker.target
+        x_b, y_b = self.frames.world_point_to_body(wp.x, wp.y)
+
+        # ---- Subpart 2b: pose tracker (called ONCE per loop) ----
+        v_cmd, omega_cmd = self.tracker.compute(self.state, x_b, y_b)
         self.state.omega = omega_cmd
 
-        # Subpart 2c — IK
+        # ---- Subpart 2c: IK ----
         u_L, u_R = inverse_kinematics(v_cmd, omega_cmd, self.k_v, self.k_omega)
+
+        # what v we can actually achieve (post-saturation) — used next loop
         self.last_achievable_v = self.k_v * (u_L + u_R)
 
+        # ---- publish ----
         msg = Float32MultiArray()
         msg.data = [float(u_L), float(u_R)]
         self.cmd_pub.publish(msg)
 
-        # 1 Hz log
+        # ---- 1 Hz log ----
         if not hasattr(self, '_last_log') or now - self._last_log > 1.0:
             self._last_log = now
             tgt = self.tracker.target
@@ -343,6 +370,7 @@ class PathTrackerNode(Node):
                 f"x={self.state.x:+.2f} y={self.state.y:+.2f} "
                 f"th={math.degrees(self.state.theta):+6.1f}° | "
                 f"tgt=({tgt.x:+.2f},{tgt.y:+.2f},{math.degrees(tgt.theta):+6.1f}°) "
+                f"tgt_b=({x_b:+.2f},{y_b:+.2f}) "
                 f"v={v_cmd:.2f} w={omega_cmd:+.2f} "
                 f"u=({u_L:+.2f},{u_R:+.2f})"
             )
