@@ -184,7 +184,7 @@ class TimedPathTracker(Node):
         now = time.monotonic()
         if self.action_end_time is not None:
             if now < self.action_end_time:
-                # Re-publish so a motor node that expects periodic commands
+                # Re-publish so the motor_control node (that expects periodic commands)
                 # continues receiving the fixed command.
                 left, right = self.wheel_commands(self.action_v, self.action_omega)
                 self.publish_wheels(left, right)
