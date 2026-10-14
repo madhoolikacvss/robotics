@@ -117,10 +117,6 @@ class TimedPathTracker(Node):
         self.get_logger().info(
             f"Loaded {len(self.waypoints)} waypoints; "
             f"k_v={self.k_v:.4f}, k_omega={self.k_omega:.4f}. "
-            "Open-loop mode: no IMU."
-        )
-        self.get_logger().warn(
-            "Assuming initial heading is world +x. Open-loop errors accumulate."
         )
 
     def publish_wheels(self, left: float, right: float) -> None:
@@ -179,7 +175,7 @@ class TimedPathTracker(Node):
         now = time.monotonic()
         if self.action_end_time is not None:
             if now < self.action_end_time:
-                # Re-publish so a motor node that expects periodic commands
+                # Re-publish so the motor_control node (that expects periodic commands)
                 # continues receiving the fixed command.
                 left, right = self.wheel_commands(self.action_v, self.action_omega)
                 self.publish_wheels(left, right)
