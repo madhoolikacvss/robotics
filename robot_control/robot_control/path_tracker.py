@@ -70,13 +70,15 @@ def load_calibration(filepath: str) -> tuple[float, float]:
 
     try:
         k_v = float(calibration["k_v"])
-        k_omega = float(calibration["k_omega"])
+        k_omega_right = float(calibration["k_omega_right"])
+        k_omega_left = float(calibration["k_omega_left"])
+
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("calibration.json must contain numeric k_v and k_omega") from exc
 
-    if k_v <= 0 or k_omega <= 0:
+    if k_v <= 0 or k_omega_right <= 0 or k_omega_left <= 0:
         raise ValueError("k_v and k_omega must both be positive")
-    return k_v, k_omega
+    return k_v, k_omega_right, k_omega_left
 
 
 def wrap_angle(angle: float) -> float:
@@ -91,7 +93,7 @@ class TimedPathTracker(Node):
         super().__init__("path_tracker_node")
 
         self.waypoints = load_waypoints(default_path("waypoints.txt"))
-        self.k_v, self.k_omega = load_calibration(default_path("calibration.json"))
+        self.k_v, self.k_omega_right, self.k_omega_left = load_calibration(default_path("calibration.json"))
 
         # Open-loop pose estimate. The robot is assumed to start at waypoint 0
         # and facing +x. The first waypoint's theta is treated as its desired
@@ -116,7 +118,7 @@ class TimedPathTracker(Node):
 
         self.get_logger().info(
             f"Loaded {len(self.waypoints)} waypoints; "
-            f"k_v={self.k_v:.4f}, k_omega={self.k_omega:.4f}. "
+            f"k_v={self.k_v:.4f}, k_omega_right={self.k_omega_right:.4f}, k_omega_left={self.k_omega_left:.4f}. "
             "Open-loop mode: no IMU."
         )
         self.get_logger().warn(
@@ -161,7 +163,10 @@ class TimedPathTracker(Node):
     def wheel_commands(self, v: float, omega: float) -> tuple[float, float]:
         # k_v = v / (u_L + u_R); k_omega = omega / (u_R - u_L)
         u_sum = v / self.k_v
-        u_diff = omega / self.k_omega
+        if omega < 0:
+            u_diff = omega / self.k_omega_right
+        else:
+            u_diff = omega / self.k_omega_left
         left = (u_sum - u_diff) / 2.0
         right = (u_sum + u_diff) / 2.0
 
