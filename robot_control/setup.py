@@ -30,6 +30,8 @@ setup(
             'motor_control = robot_control.motor_control:main',
             'keyboard_control = robot_control.keyboard_control:main',
             'velocity_control = robot_control.velocity_control:main',
+            'path_tracker = robot_control.path_tracker:main',
+            'measure = robot_control.measure:main',
         ],
     },
 )
