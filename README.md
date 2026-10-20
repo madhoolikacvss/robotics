@@ -30,3 +30,21 @@ y_k+1 = y_k + v_k**sin(theta_k)**time
 
 thtata needs to be taken from IMU
 
+## Robot vision camera
+
+On the Rubik Pi, build and launch the camera node with:
+
+```sh
+./scripts/robot_vision_build_and_run.sh
+```
+
+To launch it again without rebuilding:
+
+```sh
+./scripts/robot_vision_run.sh
+```
+
+Both scripts use ROS 2 Jazzy by default; set `ROS_DISTRO` if the installation
+uses another ROS 2 distribution. The launch file starts the `robot_vision_camera`
+node and Foxglove bridge. The camera node uses GStreamer's `qtiqmmfsrc`, so it
+requires the Rubik Pi camera source plugin and is not a generic USB-camera driver.
