@@ -17,7 +17,7 @@ class VelocityToMotorNode(Node):
         self.right_linear_deadzone = 0.09
         self.right_linear_slope = 1.59 
         
-        self.left_angular_deadzone = 0.3
+        self.left_angular_deadzone = 0.325
         self.left_angular_slope = 14.1
         self.right_angular_deadzone = 0.27
         self.right_angular_slope = 12.3
