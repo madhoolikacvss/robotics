@@ -129,6 +129,8 @@ class Hw1SolutionNode(Node):
         self.stage_pid = PIDcontroller(0.5, 0.01, 0.005)
         self.left_rotation_vel = 0.785
         self.right_rotation_vel = 0.785
+        # We never want to request a turn with motor commands lower than this for consistency
+        self.min_turn_vel = 0.3
         
     def update_dead_reckoning(self, linear_vel, angular_vel):
         """
@@ -225,16 +227,21 @@ class Hw1SolutionNode(Node):
             desired_heading = angle_to_target
         
         return desired_heading
-    
+
+
     def get_rotation_direction(self, heading_error):
         """
         Determine rotation direction based on heading error.
         Returns: angular velocity with fixed magnitude but correct direction
         """
+        if abs(heading_error) < self.angle_tolerance:
+            return 0.0
+
         if heading_error > 0:
-            return self.left_rotation_vel
+            return max(self.left_rotation_vel, self.min_turn_vel)
         else:
-            return -self.right_rotation_vel
+            return -max(self.right_rotation_vel, self.min_turn_vel)
+
         
     def control_loop(self):
         """
