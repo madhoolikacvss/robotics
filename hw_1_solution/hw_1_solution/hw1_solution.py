@@ -127,7 +127,8 @@ class Hw1SolutionNode(Node):
         
         self.stage = 'rotate_to_goal'
         self.stage_pid = PIDcontroller(0.5, 0.01, 0.005)
-        self.fixed_rotation_vel = 0.785
+        self.left_rotation_vel = 0.785
+        self.right_rotation_vel = 0.785
         
     def update_dead_reckoning(self, linear_vel, angular_vel):
         """
@@ -231,9 +232,9 @@ class Hw1SolutionNode(Node):
         Returns: angular velocity with fixed magnitude but correct direction
         """
         if heading_error > 0:
-            return self.fixed_rotation_vel
+            return self.left_rotation_vel
         else:
-            return -self.fixed_rotation_vel
+            return -self.right_rotation_vel
         
     def control_loop(self):
         """
