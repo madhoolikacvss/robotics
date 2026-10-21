@@ -1,6 +1,4 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import time
 
@@ -13,9 +11,6 @@ def generate_launch_description():
     2. velocity_mapping - converts Twist commands to motor commands
     3. hw1_solution - PID-based waypoint navigation
     """
-
-    left_turn_scale = LaunchConfiguration('left_turn_scale')
-    right_turn_scale = LaunchConfiguration('right_turn_scale')
     
     # Node 1: Motor Controller (communicates with robot hardware)
     motor_controller = Node(
@@ -42,23 +37,9 @@ def generate_launch_description():
         name='hw1_solution',
         output='screen',
         emulate_tty=True,
-        parameters=[{
-            'left_turn_scale': left_turn_scale,
-            'right_turn_scale': right_turn_scale,
-        }],
     )
     
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'left_turn_scale',
-            default_value='1.0',
-            description='Scale applied to positive (left/CCW) angular commands',
-        ),
-        DeclareLaunchArgument(
-            'right_turn_scale',
-            default_value='1.0',
-            description='Scale applied to negative (right/CW) angular commands',
-        ),
         motor_controller,
         velocity_mapping,
         hw1_solution,

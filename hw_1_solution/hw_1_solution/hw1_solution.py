@@ -120,20 +120,6 @@ class Hw1SolutionNode(Node):
         self.waypoint_reached = False
         self.tolerance = 0.1
         self.angle_tolerance = 0.1
-
-        self.left_turn_scale = float(
-            self.declare_parameter('left_turn_scale', 1.0).value
-        )
-        self.right_turn_scale = float(
-            self.declare_parameter('right_turn_scale', 1.0).value
-        )
-        if (
-            not np.isfinite(self.left_turn_scale)
-            or self.left_turn_scale <= 0.0
-            or not np.isfinite(self.right_turn_scale)
-            or self.right_turn_scale <= 0.0
-        ):
-            raise ValueError('Turn scales must be finite positive numbers')
         
         self.drive_backwards = False
         self.dt = 0.1
@@ -307,11 +293,6 @@ class Hw1SolutionNode(Node):
             else:
                 twist_msg.angular.z = float(self.get_rotation_direction(heading_error))
         
-        if twist_msg.angular.z > 0.0:
-            twist_msg.angular.z *= self.left_turn_scale
-        elif twist_msg.angular.z < 0.0:
-            twist_msg.angular.z *= self.right_turn_scale
-
         self.update_dead_reckoning(twist_msg.linear.x, twist_msg.angular.z)
         self.broadcast_tf()
         self.cmd_vel_pub.publish(twist_msg)
