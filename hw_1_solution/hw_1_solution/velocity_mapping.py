@@ -12,15 +12,16 @@ class VelocityToMotorNode(Node):
         self.wheel_base = 0.127  # [m]
 
         self.cmd_max = 1.5
-        self.left_linear_deadzone = 0.09
+        self.left_linear_deadzone = 0.06
         self.left_linear_slope = 1.59 
         self.right_linear_deadzone = 0.09
         self.right_linear_slope = 1.59 
         
         self.left_angular_deadzone = 0.475/2
-        self.left_angular_slope = 15.0
+        self.left_angular_slope = 14.0
         self.right_angular_deadzone = 0.45/2
         self.right_angular_slope = 15.0
+        self.minimum_angular_command = 0.3
 
         self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.motor_pub = self.create_publisher(Float32MultiArray, '/motor_commands', 10)
@@ -35,6 +36,12 @@ class VelocityToMotorNode(Node):
         cmd_mag = deadzone + abs(value) / max(slope, 1e-9)
         return np.copysign(cmd_mag, value)
 
+    def _enforce_angular_command_floor(self, command: float) -> float:
+        if command == 0.0:
+            return 0.0
+        magnitude = min(max(abs(command), self.minimum_angular_command), 0.5)
+        return float(np.copysign(magnitude, command))
+
     def cmd_vel_callback(self, msg: Twist):
         lin = float(msg.linear.x)
         ang = float(msg.angular.z)
@@ -47,6 +54,8 @@ class VelocityToMotorNode(Node):
         elif ang != 0.0:
             left_cmd = self._map_with_deadzone(v_left, self.left_angular_deadzone, self.left_angular_slope)
             right_cmd = self._map_with_deadzone(v_right, self.right_angular_deadzone, self.right_angular_slope)
+            left_cmd = self._enforce_angular_command_floor(left_cmd)
+            right_cmd = self._enforce_angular_command_floor(right_cmd)
         else:
             left_cmd = 0.0
             right_cmd = 0.0

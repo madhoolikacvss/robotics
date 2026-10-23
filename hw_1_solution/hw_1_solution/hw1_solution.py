@@ -101,13 +101,30 @@ class Hw1SolutionNode(Node):
         self.odom_frame = 'odom'
         self.base_frame = 'base_link'
         
+        # self.waypoints = np.array([
+        #     [0.0, 0.0, 0.0], 
+        #     [1.0, 0.0, 0.0],
+        #     [1.0, 1.0, np.pi/2],
+        #     [2.0, 1.0, 0.0],
+        #     [2.0, 2.0, -np.pi/2],
+        #     [1.0, 1.0, -np.pi/4],
+        #     [0.0, 0.0, 0.0]
+        # ])
+
+        # self.waypoints = np.array([
+        #     [0.0, 0.0, 0.0], 
+        #     [0.5, 0.0, np.pi/2],
+        #     [0.5, 0.5, 0.0],
+        #     [0.0, 0.0, 0.0],
+        # ])
+
         self.waypoints = np.array([
             [0.0, 0.0, 0.0], 
-            [1.0, 0.0, 0.0],
-            [1.0, 1.0, np.pi/2],
-            [2.0, 1.0, 0.0],
-            [2.0, 2.0, -np.pi/2],
-            [1.0, 1.0, -np.pi/4],
+            [0.5, 0.0, 0.0],
+            [0.5, 0.5, np.pi/2],
+            [1.0, 0.5, 0.0],
+            [1.0, 1.0, -np.pi/2],
+            [0.5, 0.5, -np.pi/4],
             [0.0, 0.0, 0.0]
         ])
         
@@ -127,11 +144,9 @@ class Hw1SolutionNode(Node):
         
         self.stage = 'rotate_to_goal'
         self.stage_pid = PIDcontroller(0.5, 0.01, 0.005)
-        self.left_rotation_vel = 0.785
-        self.right_rotation_vel = 0.785
-        # We never want to request a turn with motor commands lower than this for consistency
-        self.min_turn_vel = 0.3
-        
+        self.left_rotation_vel = 1.35 # 0.785
+        self.right_rotation_vel = 1.53 #  0.785
+                
     def update_dead_reckoning(self, linear_vel, angular_vel):
         """
         Update robot pose using dead reckoning
@@ -238,9 +253,9 @@ class Hw1SolutionNode(Node):
             return 0.0
 
         if heading_error > 0:
-            return max(self.left_rotation_vel, self.min_turn_vel)
+            return self.left_rotation_vel
         else:
-            return -max(self.right_rotation_vel, self.min_turn_vel)
+            return -self.right_rotation_vel
 
         
     def control_loop(self):
@@ -273,7 +288,7 @@ class Hw1SolutionNode(Node):
             heading_error = desired_heading - self.current_state[2]
             heading_error = (heading_error + np.pi) % (2 * np.pi) - np.pi
             
-            if abs(heading_error) < 0.05:
+            if abs(heading_error) < self.angle_tolerance:
                 self.stage = 'drive'
                 twist_msg.angular.z = 0.0
             else:
