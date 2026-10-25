@@ -1,5 +1,5 @@
 {
-  "k_v": 1.2,
-  "k_omega_right": 4.0,
-  "k_omega_left": 3.2
+  "k_v": 0.6666,
+  "k_omega_right": 3.85,
+  "k_omega_left": 3.8
 }

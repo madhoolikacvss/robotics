@@ -264,8 +264,12 @@ class TimedPathTracker(Node):
 
     def start_turn(self, delta: float, stage: str) -> None:
         # Opposite wheel commands +/-0.5 give predicted |omega| = k_omega.
-        duration = abs(delta) / self.k_omega
-        omega = self.k_omega if delta >= 0 else -self.k_omega
+        if delta >= 0:
+            duration = abs(delta) / self.k_omega_left
+            omega = self.k_omega_left
+        else:
+            duration = abs(delta) / self.k_omega_right
+            omega = -self.k_omega_right
         self.begin_action(v=0.0, omega=omega, duration=duration, stage=stage)
 
 
