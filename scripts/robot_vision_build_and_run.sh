@@ -15,4 +15,7 @@ cd "$WORKSPACE_DIR"
 source "$ROS_SETUP"
 colcon build --packages-select robot_vision_camera --symlink-install
 source install/setup.bash
-ros2 launch robot_vision_camera robot_vision_camera.launch.py
+ros2 launch robot_vision_camera robot_vision_camera.launch.py \
+  image_rectify:=true \
+  camera_parameter_path:="$WORKSPACE_DIR/robot_vision/config/camera_parameter.yaml" \
+  topic_name:=camera/image_rectified
