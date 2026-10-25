@@ -109,7 +109,7 @@ AprilTagNode::AprilTagNode(const rclcpp::NodeOptions& options)
 {
     // read-only parameters
     const std::string tag_family = declare_parameter("family", "36h11", descr("tag family", true));
-    tag_edge_size = declare_parameter("size", 1.0, descr("default tag size", true));
+    tag_edge_size = declare_parameter("size", 0.1, descr("default tag size", true));
 
     // get tag names, IDs and sizes
     const auto ids = declare_parameter("tag.ids", std::vector<int64_t>{}, descr("tag ids", true));
