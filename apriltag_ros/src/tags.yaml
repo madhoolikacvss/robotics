@@ -1,0 +1,8 @@
+apriltag:
+  ros__parameters:
+    family: 36h11
+    size: 0.1
+    tag:
+      ids: [0, 1]
+      frames: [tag36h11_0, tag36h11_1]
+      sizes: [0.1, 0.1]
