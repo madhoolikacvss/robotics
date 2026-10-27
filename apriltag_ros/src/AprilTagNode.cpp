@@ -243,7 +243,7 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
             tf.transform = estimate_pose(det, intrinsics, size);
 
             // APRIL TAG COEFFICIENT SCALING - ERROR CORRECTION 
-            tf.transform.translation.z = 1.277 * tf.transform.translation.z + 0.237;
+            tf.transform.translation.z = 1.277 * tf.transform.translation.z + 0;
             tfs.push_back(tf);
         }
     }
