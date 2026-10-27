@@ -241,6 +241,9 @@ void AprilTagNode::onCamera(const sensor_msgs::msg::Image::ConstSharedPtr& msg_i
             tf.child_frame_id = tag_frames.count(det->id) ? tag_frames.at(det->id) : std::string(det->family->name) + ":" + std::to_string(det->id);
             const double size = tag_sizes.count(det->id) ? tag_sizes.at(det->id) : tag_edge_size;
             tf.transform = estimate_pose(det, intrinsics, size);
+
+            // APRIL TAG COEFFICIENT SCALING - ERROR CORRECTION 
+            tf.transform.translation.z = 1.277 * tf.transform.translation.z + 2.37;
             tfs.push_back(tf);
         }
     }
