@@ -140,7 +140,7 @@ class AprilTagWaypointController(Node):
         )
 
         # ---------------------------------------------------------------
-        # 4. WAYPOINTS -- REPLACE THESE SAMPLE VALUES
+        # 4. WAYPOINTS
         # ---------------------------------------------------------------
         # Each waypoint is [x, y, heading] in meters/radians, in world_frame.
         # The robot does NOT have to start at waypoint 0.
