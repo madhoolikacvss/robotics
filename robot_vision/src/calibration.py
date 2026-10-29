@@ -11,7 +11,7 @@ import numpy as np
 CHECKERBOARD = (10,7)       # inner corners
 SQUARE_SIZE = 0.020         # meters (20 mm)
 
-IMAGE_DIR = Path("C:\\Users\\madho\\OneDrive - UC San Diego\\Desktop\\cse276\\robot_vision\\src\\cal_imgs")
+IMAGE_DIR = Path("/Users/jonah/Downloads/calibration-img")
 
 # termination criteria
 

@@ -3,3 +3,5 @@ build/**
 install/**
 hw_1_solution/hw_1_solution/__pycache__/**
 robot_control/robot_control/__pycache__/**
+venv/**
+**/.DS_Store
