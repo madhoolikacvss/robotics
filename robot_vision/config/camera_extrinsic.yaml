@@ -1,0 +1,7 @@
+camera_extrinsics:
+  x: 0.04      # 4cm forward
+  y: 0.0       # 0cm left/right
+  z: 0.125     # 12.5cm high (note: the z in tf here is relative to base_link; if base_link is on the ground, use 0.125)
+  yaw: -1.5708
+  pitch: 0.0
+  roll: -1.5708
