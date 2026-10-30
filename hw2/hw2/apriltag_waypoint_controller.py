@@ -133,7 +133,7 @@ class AprilTagWaypointController(Node):
         # T_base_camera maps camera-frame coordinates into base_link.
         # Temporary example only. A real optical camera frame often has a
         # nonzero rotation because its axes differ from base_link's axes.
-        self.camera_xyz = (0.08, 0.0, 0.12)
+        self.camera_xyz = (0.07, 0.0, 0.12)
         self.camera_rpy = (0.0, 0.0, 0.0)
         self.T_base_camera = pose_matrix_xyz_rpy(
             *self.camera_xyz, *self.camera_rpy
