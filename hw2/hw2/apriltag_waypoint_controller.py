@@ -171,7 +171,7 @@ class AprilTagWaypointController(Node):
   
       self.max_step_distance = 0.025
       self.position_tolerance = 0.035
-      self.heading_tolerance = 0.10
+      self.heading_tolerance = 0.40
   
       self.tag_timeout = 0.40
   
