@@ -116,10 +116,10 @@ class AprilTagWaypointController(Node):
         # These are physical tag poses, not waypoint positions.
         # ---------------------------------------------------------------
         self.tag_poses_world = {
-            'tag_0': (1.20, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
-            'tag_1': (1.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),
-            'tag_2': (0.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),
-            'tag_3': (0.00, -0.85, 0.05, math.pi / 2, -math.pi / 2, -math.pi / 2),
+            'tag_0': (1.60, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
+            'tag_1': (1.00, 1.20, 0.05, math.pi / 2, 0.0, -math.pi),
+            'tag_2': (0.00, 1.20, 0.05, math.pi / 2, 0.0, 0),
+            'tag_3': (0.00, -0.85, 0.05, math.pi / 2, 0.0, 0),
         }
 
         # ---------------------------------------------------------------
@@ -478,4 +478,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-    
