@@ -166,7 +166,6 @@ class AprilTagWaypointController(Node):
         self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
         self.last_no_tag_log_time = 0.0
 
-
         # Short, adaptive turn bursts
         self.minimum_turn_duration = 0.05
         self.maximum_turn_duration = 0.20
@@ -174,9 +173,9 @@ class AprilTagWaypointController(Node):
         # Minimum motor command that produces a turn.
         self.minimum_angular_motor_command = 0.3
 
-        # Calibrate this experimentally: actual robot angular velocity (rad/s)
-        # when the motor command reaches its minimum effective turning command.
-        self.minimum_turn_angular_velocity = 0.3  # Set after measuring
+        # Calibrated physical robot angular velocity (rad/s) when the motor
+        # command is forced to the 0.3 minimum floor. Update this based on actual testing.
+        self.minimum_turn_angular_velocity = 0.7  
 
         # ---------------------------------------------------------------
         # 7. ROS COMMUNICATION
@@ -345,6 +344,7 @@ class AprilTagWaypointController(Node):
             self.maximum_turn_duration,
             max(self.minimum_turn_duration, required_duration),
         )
+
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
         """Stop and wait before accepting the next distinct tag observation."""
         self.phase = 'observe'
