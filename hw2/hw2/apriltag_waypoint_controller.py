@@ -132,7 +132,7 @@ class AprilTagWaypointController(Node):
         # 5. MOTION AND OBSERVATION SETTINGS
         # ---------------------------------------------------------------
         self.k_v = 0.12
-        self.k_omega = 0.70
+        self.k_omega = 0.35
         self.k_heading = 1.8
         self.k_distance = 0.8
 
