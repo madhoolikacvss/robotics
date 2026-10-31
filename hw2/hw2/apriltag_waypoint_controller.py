@@ -178,7 +178,7 @@ class AprilTagWaypointController(Node):
       self.turn_delay = 2.50  # seconds
       self.heading_error_start: Optional[float] = None
   
-      self.tag_timeout = 1.50
+      self.tag_timeout = 10.0
   
       self.search_turn_duration = 0.20
       self.search_pause_duration = 0.40
