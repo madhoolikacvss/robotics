@@ -175,7 +175,7 @@ class AprilTagWaypointController(Node):
 
       # Heading error must remain above heading_tolerance this long
       # before the controller starts an in-place turn.
-      self.turn_delay = 0.50  # seconds
+      self.turn_delay = 2.50  # seconds
       self.heading_error_start: Optional[float] = None
   
       self.tag_timeout = 0.40
