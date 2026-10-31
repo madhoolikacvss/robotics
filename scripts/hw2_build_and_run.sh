@@ -12,7 +12,11 @@ if [ ! -f "$ROS_SETUP" ]; then
 fi
 
 cd "$WORKSPACE_DIR"
+set +u
 source "$ROS_SETUP"
+set -u
 colcon build --packages-up-to hw2 --symlink-install
+set +u
 source install/setup.bash
+set -u
 ros2 launch hw2 hw2.launch.py
