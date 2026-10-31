@@ -105,9 +105,10 @@ class AprilTagWaypointController(Node):
         # ---------------------------------------------------------------
         self.tag_poses_world = {
             'tag_0': (1.60, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
-            'tag_1': (1.00, 1.20, 0.05, math.pi / 2, 0.0, 0.0),
-            'tag_2': (0.00, 1.20, 0.05, math.pi / 2, 0.0, math.pi / 2),
-            'tag_3': (0.00, -0.85, 0.05, math.pi / 2, 0.0, math.pi),
+            'tag_1': (0.90, 1.14, 0.05, math.pi / 2, 0.0, 0.0),
+            'tag_2': (-0.17, 0.0, 0.05, math.pi / 2, 0.0, math.pi / 2),
+            'tag_3': (0.55, -1.10 , 0.05, math.pi / 2, 0.0, -math.pi),
+            'tag_4': (0.0, 1.14 , 0.05, math.pi / 2, 0.0, math.pi/2),
         }
 
         # ---------------------------------------------------------------
@@ -123,8 +124,8 @@ class AprilTagWaypointController(Node):
         # 4. WAYPOINTS: [x, y, heading] in world_frame
         # ---------------------------------------------------------------
         self.waypoints = np.array([
-            [1.00, 0.00, 0.0],
-            [1.00, 1.00, math.pi],
+            [1.00, 0.00, 0],
+            [0.80, 1.00, math.pi],
             [0.00, 0.00, 0.0],
         ], dtype=float)
 
@@ -136,7 +137,7 @@ class AprilTagWaypointController(Node):
         self.k_heading = 1.8
         self.k_distance = 0.8
 
-        self.control_period = 0.10
+        self.control_period = 0.02
 
         # Maximum movement window cap
         self.move_duration = 2.0
@@ -147,7 +148,7 @@ class AprilTagWaypointController(Node):
         self.tag_max_age = 5.0
 
         # Increased tolerance to 0.2 meters as requested
-        self.position_tolerance = 0.2
+        self.position_tolerance = 0.2 # 0.4 IS ONLY FOR THE HEADING ISOLATION - CHANGE ITTTTtTTTTTT!!!!!!!!!!!!!!!!
         self.heading_tolerance = 0.2
 
         # ---------------------------------------------------------------
@@ -155,6 +156,10 @@ class AprilTagWaypointController(Node):
         # ---------------------------------------------------------------
         self.current_waypoint_idx = 0
         self.finished = False
+
+        # Waypoint sub-phase is independent of the operational observe/move phase.
+        # It remains 'heading' throughout final alignment, even if x/y drifts.
+        self.waypoint_phase = 'position'
 
         self.phase = 'observe'
         self.phase_started_at = self._now_seconds()
@@ -168,16 +173,54 @@ class AprilTagWaypointController(Node):
 
 
         # Short, adaptive turn bursts
+#        self.minimum_turn_duration = 0.05
+#        self.maximum_turn_duration = 0.20
+#
+#        # Minimum motor command that produces a turn.
+#        self.minimum_angular_motor_command = 0.3
+#
+#        # Calibrate this experimentally: actual robot angular velocity (rad/s)
+#        # when the motor command reaches its minimum effective turning command.
+#        self.minimum_turn_angular_velocity = 0.3  # Set after measuring
+
+        
+        # ---------------------------------------------------------------
+        # TURN CALIBRATION
+        # ---------------------------------------------------------------
+        # HW1 calibration:
+        #   omega ~= k_omega * (u_right - u_left)
+        #
+        # The existing velocity mapping turns cmd.angular.z = +/-0.35
+        # into approximately u_left = -0.3, u_right = +0.3 because
+        # of its angular motor-command floor.
+        #
+        # Therefore, the estimated effective angular rates are:
+        #   k_omega * (0.3 - (-0.3)) = k_omega * 0.6
+        #
+        # These are INITIAL ESTIMATES, not verified HW2 measurements.
+        self.hw1_k_omega_right = 3.85
+        self.hw1_k_omega_left = 3.80
+        self.estimated_motor_command_magnitude = 0.30
+        
+        self.estimated_turn_rate_ccw = (
+            self.hw1_k_omega_right
+            * 2.0
+            * self.estimated_motor_command_magnitude
+        )  # approximately 2.31 rad/s
+        
+        self.estimated_turn_rate_cw = (
+            self.hw1_k_omega_left
+            * 2.0
+            * self.estimated_motor_command_magnitude
+        )  # approximately 2.28 rad/s
+        
+        # Keep a small lower bound for commands shorter than one motor update.
         self.minimum_turn_duration = 0.05
-        self.maximum_turn_duration = 0.20
-
-        # Minimum motor command that produces a turn.
-        self.minimum_angular_motor_command = 0.3
-
-        # Calibrate this experimentally: actual robot angular velocity (rad/s)
-        # when the motor command reaches its minimum effective turning command.
-        self.minimum_turn_angular_velocity = 0.3  # Set after measuring
-
+        
+        # Safety limit, not a burst limit. This allows turns up to about
+        # 180 degrees at the estimated angular rates.
+        self.maximum_turn_duration = 2.0
+        
         # ---------------------------------------------------------------
         # 7. ROS COMMUNICATION
         # ---------------------------------------------------------------
@@ -263,55 +306,89 @@ class AprilTagWaypointController(Node):
     def calculate_motion_command(
         self, robot_x: float, robot_y: float, robot_yaw: float
     ):
-        """Calculate motion command and its required precise execution duration."""
+        """
+        Calculate a movement command for the current waypoint sub-phase.
+
+        waypoint_phase='position': navigate to the waypoint's x/y.
+        waypoint_phase='heading': align to its specified final heading.
+
+        The operational self.phase ('observe'/'move') is kept separate.
+        """
         waypoint = self.waypoints[self.current_waypoint_idx]
 
         dx = float(waypoint[0] - robot_x)
         dy = float(waypoint[1] - robot_y)
         distance_error = math.hypot(dx, dy)
 
-        if distance_error > 1e-6:
-            desired_heading = math.atan2(dy, dx)
-        else:
-            desired_heading = float(waypoint[2])
-
-        heading_error = wrap_angle(desired_heading - robot_yaw)
         cmd = Twist()
-        move_duration = 0.0  # Initialize default to prevent UnboundLocalError
+        move_duration = 0.0
 
-        # First navigate to the waypoint position.
-        if distance_error > self.position_tolerance:
-            if abs(heading_error) > self.heading_tolerance:
+        # ---------------------------------------------------------------
+        # WAYPOINT SUB-PHASE 1: Navigate to the waypoint's x/y position.
+        # ---------------------------------------------------------------
+        if self.waypoint_phase == 'position':
+            if distance_error <= self.position_tolerance:
+                # Lock this waypoint into heading alignment. Do not advance
+                # the waypoint index yet; get a fresh observation first.
+                self.waypoint_phase = 'heading'
+                self.get_logger().info(
+                    f'Waypoint {self.current_waypoint_idx}: position tolerance '
+                    f'reached (error={distance_error:.3f}m). '
+                    'Switching to final-heading alignment.'
+                )
+                return (
+                    cmd, 'phase_transition', dx, dy, 0.0,
+                    distance_error, 0.0
+                )
+
+            desired_heading = math.atan2(dy, dx)
+            travel_heading_error = wrap_angle(desired_heading - robot_yaw)
+
+            if abs(travel_heading_error) > self.heading_tolerance:
                 cmd.linear.x = 0.0
                 cmd.angular.z = math.copysign(
-                    self.k_omega, heading_error
+                    self.k_omega, travel_heading_error
                 )
                 action = 'turn'
-                move_duration = self.calculate_turn_duration(heading_error)
+                move_duration = self.calculate_turn_duration(
+                    travel_heading_error
+                )
             else:
-                # Drive forward towards waypoint
+                # Drive toward the waypoint, with heading correction.
                 desired_speed = min(
                     self.k_v,
                     max(0.0, self.k_distance * distance_error),
                 )
                 cmd.linear.x = desired_speed
                 cmd.angular.z = float(np.clip(
-                    self.k_heading * heading_error,
+                    self.k_heading * travel_heading_error,
                     -self.k_omega,
                     self.k_omega,
                 ))
                 action = 'drive'
-                
-                # Dynamic duration for drive capped at max move_duration
+
+                # Dynamic duration for drive capped at move_duration.
                 if abs(cmd.linear.x) > 1e-6:
-                    move_duration = min(self.move_duration, distance_error / abs(cmd.linear.x))
-                else:
-                    move_duration = 0.0
-        else:
-            # At waypoint position: align to final heading.
+                    move_duration = min(
+                        self.move_duration,
+                        distance_error / abs(cmd.linear.x),
+                    )
+
+            return (
+                cmd, action, dx, dy, travel_heading_error,
+                distance_error, move_duration
+            )
+
+        # ---------------------------------------------------------------
+        # WAYPOINT SUB-PHASE 2: Align to the specified final heading.
+        # Ignore x/y error for action selection because the robot may drift
+        # while turning. The position error is retained for diagnostics.
+        # ---------------------------------------------------------------
+        if self.waypoint_phase == 'heading':
             final_heading_error = wrap_angle(
                 float(waypoint[2]) - robot_yaw
             )
+
             if abs(final_heading_error) > self.heading_tolerance:
                 cmd.linear.x = 0.0
                 cmd.angular.z = math.copysign(
@@ -325,26 +402,46 @@ class AprilTagWaypointController(Node):
                 action = 'reached'
                 move_duration = 0.0
 
-        return cmd, action, dx, dy, heading_error, distance_error, move_duration
-    
-    def calculate_turn_duration(self, angular_error: float) -> float:
-        """Choose a bounded turn-burst duration based on the angular error."""
-        if abs(angular_error) <= self.heading_tolerance:
-            return 0.0
-
-        angular_speed = self.minimum_turn_angular_velocity
-        if angular_speed <= 0.0:
-            raise ValueError(
-                "minimum_turn_angular_velocity must be calibrated "
-                "to a positive measured value."
+            return (
+                cmd, action, dx, dy, final_heading_error,
+                distance_error, move_duration
             )
 
-        required_duration = abs(angular_error) / angular_speed
-
-        return min(
-            self.maximum_turn_duration,
-            max(self.minimum_turn_duration, required_duration),
+        raise ValueError(
+            f"Unknown waypoint phase: {self.waypoint_phase!r}"
         )
+
+    def calculate_turn_duration(self, angular_error: float) -> float:
+      """
+      Estimate the duration for one complete timed turn.
+  
+      Uses direction-specific angular-rate estimates derived from HW1
+      calibration and the existing velocity_mapping.py command floor.
+  
+      The estimates must be validated through AprilTag observations.
+      No IMU is used.
+      """
+      if abs(angular_error) <= self.heading_tolerance:
+          return 0.0
+  
+      if angular_error > 0.0:
+          # Positive yaw: counterclockwise turn.
+          angular_speed = self.estimated_turn_rate_ccw
+      else:
+          # Negative yaw: clockwise turn.
+          angular_speed = self.estimated_turn_rate_cw
+  
+      if angular_speed <= 0.0:
+          raise ValueError("Estimated turn rate must be positive.")
+  
+      required_duration = abs(angular_error) / angular_speed
+  
+      return min(
+          self.maximum_turn_duration,
+          max(self.minimum_turn_duration, required_duration),
+      )
+        
+        
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
         """Stop and wait before accepting the next distinct tag observation."""
         self.phase = 'observe'
@@ -447,11 +544,24 @@ class AprilTagWaypointController(Node):
             f'calc_duration={move_duration:.3f}s'
         )
 
+        if action == 'phase_transition':
+            # Position tolerance was reached. The waypoint index stays the
+            # same; self.waypoint_phase is now 'heading'. Stop and wait for
+            # a fresh AprilTag observation before calculating a turn.
+            self.last_used_tag_stamp[tag_frame] = tag_stamp
+            self.begin_observation_phase(
+                now, require_new_after_stop=True
+            )
+            return
+
         if action == 'reached':
+            # The final heading is aligned. Only now is this waypoint complete.
             self.last_used_tag_stamp[tag_frame] = tag_stamp
             self.get_logger().info(
                 f'Reached waypoint {self.current_waypoint_idx}: '
-                f'position error={distance_error:.3f}m.'
+                f'final heading aligned; '
+                f'position error={distance_error:.3f}m, '
+                f'heading error={heading_error:.3f}rad.'
             )
             self.current_waypoint_idx += 1
 
@@ -461,6 +571,8 @@ class AprilTagWaypointController(Node):
                 self.get_logger().info('All waypoints reached.')
                 return
 
+            # Start position navigation for the next waypoint.
+            self.waypoint_phase = 'position'
             self.begin_observation_phase(
                 now, require_new_after_stop=True
             )
