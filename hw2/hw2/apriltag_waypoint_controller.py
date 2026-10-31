@@ -265,25 +265,19 @@ class AprilTagWaypointController(Node):
 
         heading_error = wrap_angle(desired_heading - robot_yaw)
         cmd = Twist()
-        move_duration = self.move_duration
 
         # First navigate to the waypoint position.
         if distance_error > self.position_tolerance:
             if abs(heading_error) > self.heading_tolerance:
-                # Turn in place
+                # Turn in place: set a fixed, controlled angular speed
                 cmd.linear.x = 0.0
-                cmd.angular.z = float(np.clip(
-                    self.k_heading * heading_error,
-                    -self.k_omega,
-                    self.k_omega,
-                ))
+                turn_speed = self.k_omega  # Constant execution speed (0.70 rad/s)
+                cmd.angular.z = math.copysign(turn_speed, heading_error)
                 action = 'turn'
                 
-                # Dynamic duration for turn: angle / angular_velocity
-                if abs(cmd.angular.z) > 1e-6:
-                    move_duration = min(self.move_duration, abs(heading_error) / abs(cmd.angular.z))
-                else:
-                    move_duration = 0.0
+                # Precise execution time for this exact angular error & speed
+                required_time = abs(heading_error) / turn_speed
+                move_duration = min(self.move_duration, required_time)
             else:
                 # Drive forward towards waypoint
                 desired_speed = min(
@@ -298,7 +292,7 @@ class AprilTagWaypointController(Node):
                 ))
                 action = 'drive'
                 
-                # Dynamic duration for drive: distance / speed (capped at max move_duration)
+                # Dynamic duration for drive capped at max move_duration
                 if abs(cmd.linear.x) > 1e-6:
                     move_duration = min(self.move_duration, distance_error / abs(cmd.linear.x))
                 else:
@@ -310,23 +304,18 @@ class AprilTagWaypointController(Node):
             )
             if abs(final_heading_error) > self.heading_tolerance:
                 cmd.linear.x = 0.0
-                cmd.angular.z = float(np.clip(
-                    self.k_heading * final_heading_error,
-                    -self.k_omega,
-                    self.k_omega,
-                ))
+                turn_speed = self.k_omega
+                cmd.angular.z = math.copysign(turn_speed, final_heading_error)
                 action = 'final_heading_turn'
                 
-                # Dynamic duration for final turn: angle / angular_velocity
-                if abs(cmd.angular.z) > 1e-6:
-                    move_duration = min(self.move_duration, abs(final_heading_error) / abs(cmd.angular.z))
-                else:
-                    move_duration = 0.0
+                required_time = abs(final_heading_error) / turn_speed
+                move_duration = min(self.move_duration, required_time)
             else:
                 action = 'reached'
 
         return cmd, action, dx, dy, heading_error, distance_error, move_duration
 
+    
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
         """Stop and wait before accepting the next distinct tag observation."""
         self.phase = 'observe'
