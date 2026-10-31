@@ -3,7 +3,7 @@
 Stop-and-go AprilTag waypoint controller for a differential-drive ROS 2 robot.
 
 Control cycle:
-  1. Stop and wait for the observation pause to finish.
+  1. Stop and wait up to the observation timeout for a new AprilTag observation.
   2. Wait for a NEW AprilTag TF observation captured after the previous move.
   3. Estimate the robot pose from the known tag pose and camera extrinsics.
   4. Calculate one velocity command and its required movement duration (both linear & angular).
@@ -11,7 +11,9 @@ Control cycle:
   6. Stop, wait, and localize again.
 """
 
+import csv
 import math
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -104,11 +106,12 @@ class AprilTagWaypointController(Node):
         # 2. KNOWN APRILTAG WORLD POSES
         # ---------------------------------------------------------------
         self.tag_poses_world = {
-            'tag_0': (1.60, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
-            'tag_1': (0.90, 1.14, 0.05, math.pi / 2, 0.0, 0.0),
-            'tag_2': (-0.17, 0.0, 0.05, math.pi / 2, 0.0, math.pi / 2),
-            'tag_3': (0.55, -1.10 , 0.05, math.pi / 2, 0.0, -math.pi),
-            'tag_4': (0.0, 1.14 , 0.05, math.pi / 2, 0.0, math.pi/2),
+            'tag_0': (1.75, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
+            'tag_1': (1.0, 2.3, 0.05, math.pi / 2, 0.0, 0.0),
+            'tag_2': (0.0, -0.35, 0.05, math.pi / 2, 0.0, math.pi),
+            # 'tag_2': (-0.2, 0.0, 0.05, math.pi / 2, 0.0, math.pi / 2),
+            'tag_3': (0.3, 1.41 , 0.05, math.pi / 2, 0.0, math.pi / 2),
+            'tag_4': (0.38, 2.0 , 0.05, math.pi / 2, 0.0, math.pi/2),
         }
 
         # ---------------------------------------------------------------
@@ -124,8 +127,9 @@ class AprilTagWaypointController(Node):
         # 4. WAYPOINTS: [x, y, heading] in world_frame
         # ---------------------------------------------------------------
         self.waypoints = np.array([
+            [0.00, 0.00, 0],
             [1.00, 0.00, 0],
-            [0.80, 1.00, math.pi],
+            [1.00, 2.00, math.pi],
             [0.00, 0.00, 0.0],
         ], dtype=float)
 
@@ -142,14 +146,15 @@ class AprilTagWaypointController(Node):
         # Maximum movement window cap
         self.move_duration = 2.0
 
-        # After stopping, wait at least this long before using a new image.
-        self.observation_pause = 2.0
+        # Maximum time to wait for a post-stop image before searching for a tag.
+        self.observation_timeout = 4.0
 
         self.tag_max_age = 5.0
+        self.no_tag_search_angle = math.radians(20.0)
 
         # Increased tolerance to 0.2 meters as requested
-        self.position_tolerance = 0.2 # 0.4 IS ONLY FOR THE HEADING ISOLATION - CHANGE ITTTTtTTTTTT!!!!!!!!!!!!!!!!
-        self.heading_tolerance = 0.2
+        self.position_tolerance = 0.13
+        self.heading_tolerance = 0.13
 
         # ---------------------------------------------------------------
         # 6. STATE
@@ -169,7 +174,7 @@ class AprilTagWaypointController(Node):
         self.active_command = Twist()
         self.current_move_duration = self.move_duration
         self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
-        self.last_no_tag_log_time = 0.0
+        self.latest_estimated_position: Optional[tuple[float, float, float]] = None
 
 
         # Short, adaptive turn bursts
@@ -229,21 +234,57 @@ class AprilTagWaypointController(Node):
             PoseStamped, '/robot_pose_estimate', 10
         )
 
+        self.position_log_path = Path(
+            self.declare_parameter(
+                'position_log_path', 'robot_position.csv'
+            ).value
+        ).expanduser()
+        self.position_log_file = self.position_log_path.open(
+            'a', newline='', encoding='utf-8'
+        )
+        self.position_log_writer = csv.writer(self.position_log_file)
+        if self.position_log_path.stat().st_size == 0:
+            self.position_log_writer.writerow(
+                ['timestamp_sec', 'frame', 'x', 'y', 'yaw_rad']
+            )
+            self.position_log_file.flush()
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.timer = self.create_timer(
             self.control_period, self.control_loop
         )
+        self.position_log_timer = self.create_timer(
+            1.0, self.write_position_to_file
+        )
 
         self.get_logger().info(
             'Stop-and-go AprilTag controller started: '
             f'max move duration={self.move_duration:.1f}s, '
-            f'position tolerance={self.position_tolerance:.2f}m.'
+            f'position tolerance={self.position_tolerance:.2f}m. '
+            f'Writing estimated poses to {self.position_log_path}.'
         )
 
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def write_position_to_file(self):
+        """Append the latest estimated pose to the CSV log once per second."""
+        if self.latest_estimated_position is None:
+            return
+
+        timestamp = self._now_seconds()
+        x, y, yaw = self.latest_estimated_position
+        self.position_log_writer.writerow([
+            f'{timestamp:.9f}', self.world_frame,
+            f'{x:.6f}', f'{y:.6f}', f'{yaw:.6f}',
+        ])
+        self.position_log_file.flush()
+
+    def destroy_node(self):
+        self.position_log_file.close()
+        return super().destroy_node()
 
     def publish_stop(self):
         self.cmd_pub.publish(Twist())
@@ -288,9 +329,19 @@ class AprilTagWaypointController(Node):
             if stamp_seconds <= self.last_used_tag_stamp[tag_frame]:
                 continue
 
-            if stamp_seconds <= self.require_stamp_after:
+            if stamp_seconds < self.require_stamp_after:
                 continue
 
+            translation = tf_msg.transform.translation
+            rotation = tf_msg.transform.rotation
+            self.get_logger().info(
+                f'RAW TAG TF {tf_msg.header.frame_id} -> '
+                f'{tf_msg.child_frame_id} stamp={stamp_seconds:.6f}: '
+                f't=({translation.x:.3f}, {translation.y:.3f}, '
+                f'{translation.z:.3f}) '
+                f'q=({rotation.x:.4f}, {rotation.y:.4f}, '
+                f'{rotation.z:.4f}, {rotation.w:.4f})'
+            )
             return tag_frame, transform_to_matrix(tf_msg), stamp_seconds
 
         return None, None, None
@@ -443,10 +494,10 @@ class AprilTagWaypointController(Node):
         
         
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
-        """Stop and wait before accepting the next distinct tag observation."""
+        """Stop and wait up to the timeout for a post-stop tag observation."""
         self.phase = 'observe'
         self.phase_started_at = now
-        self.observe_ready_at = now + self.observation_pause
+        self.observe_ready_at = now + self.observation_timeout
 
         if require_new_after_stop:
             self.require_stamp_after = now
@@ -455,7 +506,8 @@ class AprilTagWaypointController(Node):
         self.publish_stop()
 
         self.get_logger().info(
-            f'Stopped. Waiting {self.observation_pause:.1f}s before localizing again.'
+            'Stopped. Waiting up to '
+            f'{self.observation_timeout:.1f}s for a post-stop image.'
         )
 
     def start_movement(self, cmd: Twist, tag_frame: str, stamp_seconds: float,
@@ -472,6 +524,23 @@ class AprilTagWaypointController(Node):
             f'(TF age={max(0.0, now - stamp_seconds):.2f}s). '
             f'Action={action}; executing for **{move_duration:.3f}s**: '
             f'v={cmd.linear.x:.3f}, w={cmd.angular.z:.3f}'
+        )
+
+    def start_tag_search_turn(self, now: float):
+        """Turn left briefly when no tag is visible, then resume observing."""
+        cmd = Twist()
+        cmd.angular.z = self.k_omega
+        self.active_command = cmd
+        self.current_move_duration = self.calculate_turn_duration(
+            self.no_tag_search_angle
+        )
+        self.phase = 'move'
+        self.phase_started_at = now
+
+        self.get_logger().info(
+            'No AprilTag detected; turning left about '
+            f'{math.degrees(self.no_tag_search_angle):.0f} degrees for '
+            f'{self.current_move_duration:.3f}s before checking again.'
         )
 
     def control_loop(self):
@@ -498,21 +567,18 @@ class AprilTagWaypointController(Node):
             return
 
         # ---------------------------------------------------------------
-        # OBSERVE PHASE: remain stopped. Wait for pause and new TF.
+        # OBSERVE PHASE: remain stopped while waiting for a post-stop TF.
         # ---------------------------------------------------------------
         self.publish_stop()
-
-        if now < self.observe_ready_at:
-            return
 
         tag_frame, T_camera_tag, tag_stamp = self.get_new_known_tag()
 
         if T_camera_tag is None:
-            if now - self.last_no_tag_log_time >= 1.0:
-                self.get_logger().info(
-                    'Still stopped; waiting for a new AprilTag observation.'
-                )
-                self.last_no_tag_log_time = now
+            if now < self.observe_ready_at:
+                return
+            # FIXME
+            return
+            self.start_tag_search_turn(now)
             return
 
         T_world_robot = self.estimate_world_robot_pose(
@@ -521,6 +587,7 @@ class AprilTagWaypointController(Node):
         robot_x = float(T_world_robot[0, 3])
         robot_y = float(T_world_robot[1, 3])
         robot_yaw = rotation_matrix_to_yaw(T_world_robot[:3, :3])
+        self.latest_estimated_position = (robot_x, robot_y, robot_yaw)
 
         pose_msg = PoseStamped()
         pose_msg.header.stamp = self.get_clock().now().to_msg()
