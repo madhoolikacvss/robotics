@@ -171,7 +171,12 @@ class AprilTagWaypointController(Node):
   
       self.max_step_distance = 0.025
       self.position_tolerance = 0.035
-      self.heading_tolerance = 0.40
+      self.heading_tolerance = 0.10
+
+      # Heading error must remain above heading_tolerance this long
+      # before the controller starts an in-place turn.
+      self.turn_delay = 0.50  # seconds
+      self.heading_error_start: Optional[float] = None
   
       self.tag_timeout = 0.40
   
@@ -253,6 +258,18 @@ class AprilTagWaypointController(Node):
 
     def publish_stop(self):
         self.cmd_pub.publish(Twist())
+
+    def turn_delay_elapsed(self, heading_error: float, now: float) -> bool:
+        """Return True only after a large heading error persists for turn_delay."""
+        if abs(heading_error) <= self.heading_tolerance:
+            self.heading_error_start = None
+            return False
+
+        if self.heading_error_start is None:
+            self.heading_error_start = now
+            return False
+
+        return (now - self.heading_error_start) >= self.turn_delay
     
     def begin_search_turn(self, now: float):
       """Alternate between a short search turn and a stationary observation pause."""
@@ -306,6 +323,8 @@ class AprilTagWaypointController(Node):
       tag_frame, T_camera_tag = self.get_visible_known_tag()
   
       if T_camera_tag is None:
+          # Do not let time spent without a usable tag count toward the turn delay.
+          self.heading_error_start = None
           self.begin_search_turn(now)
           return
   
@@ -355,13 +374,18 @@ class AprilTagWaypointController(Node):
       # First reach the waypoint position, then align to its requested heading.
       if distance_error > self.position_tolerance:
           if abs(heading_error) > self.heading_tolerance:
-              # Turn in place if the waypoint is not sufficiently ahead.
-              angular = self.k_heading * heading_error
-              cmd.angular.z = float(np.clip(
-                  angular, -self.k_omega, self.k_omega
-              ))
+              # Wait for a persistent heading error before turning in place.
+              if self.turn_delay_elapsed(heading_error, now):
+                  angular = self.k_heading * heading_error
+                  cmd.angular.z = float(np.clip(
+                      angular, -self.k_omega, self.k_omega
+                  ))
+              else:
+                  # Error has not persisted long enough; remain stopped.
+                  cmd.angular.z = 0.0
               cmd.linear.x = 0.0
           else:
+              self.heading_error_start = None
               desired_speed = min(
                   self.k_v,
                   max(0.0, self.k_distance * distance_error),
@@ -376,13 +400,18 @@ class AprilTagWaypointController(Node):
       else:
           final_heading_error = wrap_angle(float(waypoint[2]) - robot_yaw)
           if abs(final_heading_error) > self.heading_tolerance:
+              # Apply the same persistence delay when aligning at the waypoint.
+              if self.turn_delay_elapsed(final_heading_error, now):
+                  cmd.angular.z = float(np.clip(
+                      self.k_heading * final_heading_error,
+                      -self.k_omega,
+                      self.k_omega,
+                  ))
+              else:
+                  cmd.angular.z = 0.0
               cmd.linear.x = 0.0
-              cmd.angular.z = float(np.clip(
-                  self.k_heading * final_heading_error,
-                  -self.k_omega,
-                  self.k_omega,
-              ))
           else:
+              self.heading_error_start = None
               self.publish_stop()
               self.get_logger().info(
                   f'Reached waypoint {self.current_waypoint_idx}: '
