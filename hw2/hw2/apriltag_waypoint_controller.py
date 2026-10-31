@@ -166,6 +166,18 @@ class AprilTagWaypointController(Node):
         self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
         self.last_no_tag_log_time = 0.0
 
+
+        # Short, adaptive turn bursts
+        self.minimum_turn_duration = 0.05
+        self.maximum_turn_duration = 0.20
+
+        # Minimum motor command that produces a turn.
+        self.minimum_angular_motor_command = 0.3
+
+        # Calibrate this experimentally: actual robot angular velocity (rad/s)
+        # when the motor command reaches its minimum effective turning command.
+        self.minimum_turn_angular_velocity = 0.3  # Set after measuring
+
         # ---------------------------------------------------------------
         # 7. ROS COMMUNICATION
         # ---------------------------------------------------------------
@@ -270,15 +282,12 @@ class AprilTagWaypointController(Node):
         # First navigate to the waypoint position.
         if distance_error > self.position_tolerance:
             if abs(heading_error) > self.heading_tolerance:
-                # Turn in place: set a fixed, controlled angular speed
                 cmd.linear.x = 0.0
-                turn_speed = self.k_omega  # Constant execution speed (0.70 rad/s)
-                cmd.angular.z = math.copysign(turn_speed, heading_error)
+                cmd.angular.z = math.copysign(
+                    self.k_omega, heading_error
+                )
                 action = 'turn'
-                
-                # Precise execution time for this exact angular error & speed
-                required_time = abs(heading_error) / turn_speed
-                move_duration = min(self.move_duration, required_time)
+                move_duration = self.calculate_turn_duration(heading_error)
             else:
                 # Drive forward towards waypoint
                 desired_speed = min(
@@ -305,19 +314,37 @@ class AprilTagWaypointController(Node):
             )
             if abs(final_heading_error) > self.heading_tolerance:
                 cmd.linear.x = 0.0
-                turn_speed = self.k_omega
-                cmd.angular.z = math.copysign(turn_speed, final_heading_error)
+                cmd.angular.z = math.copysign(
+                    self.k_omega, final_heading_error
+                )
                 action = 'final_heading_turn'
-                
-                required_time = abs(final_heading_error) / turn_speed
-                move_duration = min(self.move_duration, required_time)
+                move_duration = self.calculate_turn_duration(
+                    final_heading_error
+                )
             else:
                 action = 'reached'
                 move_duration = 0.0
 
         return cmd, action, dx, dy, heading_error, distance_error, move_duration
     
-    
+    def calculate_turn_duration(self, angular_error: float) -> float:
+        """Choose a bounded turn-burst duration based on the angular error."""
+        if abs(angular_error) <= self.heading_tolerance:
+            return 0.0
+
+        angular_speed = self.minimum_turn_angular_velocity
+        if angular_speed <= 0.0:
+            raise ValueError(
+                "minimum_turn_angular_velocity must be calibrated "
+                "to a positive measured value."
+            )
+
+        required_duration = abs(angular_error) / angular_speed
+
+        return min(
+            self.maximum_turn_duration,
+            max(self.minimum_turn_duration, required_duration),
+        )
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
         """Stop and wait before accepting the next distinct tag observation."""
         self.phase = 'observe'
