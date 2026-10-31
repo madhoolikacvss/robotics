@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """
-Iterative AprilTag waypoint controller for a differential-drive ROS 2 robot.
+Stop-and-go AprilTag waypoint controller for a differential-drive ROS 2 robot.
 
-How it works:
-  1. Each known AprilTag has a measured pose in the world frame.
-  2. The controller checks the configured tag TF frames and uses a visible,
-     recent tag to estimate the robot's world pose.
-  3. It compares that pose with the current waypoint.
-  4. It publishes a short velocity command, then repeats the observation.
+Control cycle:
+  1. Stop and wait for the observation pause to finish.
+  2. Wait for a NEW AprilTag TF observation captured after the previous move.
+  3. Estimate the robot pose from the known tag pose and camera extrinsics.
+  4. Calculate one velocity command.
+  5. Execute that command for a fixed movement window.
+  6. Stop, wait, and localize again.
 
-IMPORTANT SETUP:
-  - Fill in TAG_POSES_WORLD with the measured world pose of each tag.
-  - Fill in WAYPOINTS with your desired [x, y, heading] targets.
-  - Replace CAMERA_XYZ / CAMERA_RPY with the calibrated camera-to-robot pose.
-  - Confirm TAG_FRAME_PREFIX / frame names match your AprilTag TF publisher.
-  - All tag poses and waypoints must use the same world coordinate frame.
-  - Tag pose is [x, y, z, roll, pitch, yaw], with angles in radians.
-  - Waypoints are [x, y, heading], with heading in radians.
+Unlike the previous controller, this node does not rotate to search for tags.
+If no fresh known-tag transform is available, it remains stopped.
+
+IMPORTANT:
+  - TAG_POSES_WORLD must contain measured physical tag poses in the world frame.
+  - WAYPOINTS are [x, y, heading] in the same world frame.
+  - T_base_camera maps camera-frame coordinates into base_link.
+  - Confirm camera_frame and tag frame names match the TF tree.
   - Test with the robot lifted and at low speeds first.
 """
 
@@ -29,12 +30,8 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
 
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
 from tf2_ros import Buffer, TransformListener, TransformException
-import time
-from geometry_msgs.msg import PoseStamped   # add to imports
-
-
 
 
 def wrap_angle(angle: float) -> float:
@@ -66,14 +63,15 @@ def transform_to_matrix(transform_stamped):
     return matrix
 
 
-def pose_matrix_xyz_rpy(x: float, y: float, z: float,
-                        roll: float, pitch: float, yaw: float):
-    """Build a 4x4 pose matrix from translation and fixed-axis roll/pitch/yaw."""
+def pose_matrix_xyz_rpy(
+    x: float, y: float, z: float,
+    roll: float, pitch: float, yaw: float
+):
+    """Build a 4x4 pose matrix using R = Rz(yaw) @ Ry(pitch) @ Rx(roll)."""
     cr, sr = math.cos(roll), math.sin(roll)
     cp, sp = math.cos(pitch), math.sin(pitch)
     cy, sy = math.cos(yaw), math.sin(yaw)
 
-    # R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
     rotation = np.array([
         [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
@@ -103,118 +101,130 @@ def rotation_matrix_to_yaw(rotation) -> float:
 
 class AprilTagWaypointController(Node):
     def __init__(self):
-      super().__init__('apriltag_waypoint_controller')
-      # ---------------------------------------------------------------
-      # 1. FRAME NAMES
-      # ---------------------------------------------------------------
-      self.world_frame = 'odom'       # Name of your shared world frame
-      self.base_frame = 'base_link'   # Robot body frame
-      self.camera_frame = 'camera_frame'
-      
-      # ---------------------------------------------------------------
-      # 2. KNOWN APRILTAG WORLD POSES
-      # ---------------------------------------------------------------
-      # Dictionary: TF child frame name -> (x, y, z, roll, pitch, yaw).
-      # Frame names must match the configured names published by apriltag_ros.
-      #
-      # These are the measured poses of the PHYSICAL TAGS in the world
-      # coordinate frame, NOT waypoint locations.
-      #
-      # Position is in meters; roll/pitch/yaw are in radians.
-      # The orientation must describe the tag TF frame's axes in the
-      # world frame, using the same convention as your TF publisher.
-      self.tag_poses_world = {
-          'tag_0': (1.20, 0.00, 0.05, math.pi/2,0.0, -math.pi/2),             
-          'tag_1': (1.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),     
-          'tag_2': (0.0, 1.20, 0.05, 0.0, 0.0, math.pi / 2),        
-          'tag_3': (0.0, -0.85, 0.05, math.pi/2,-math.pi/2, -math.pi/2),   
-      }
+        super().__init__('apriltag_waypoint_controller')
 
-      # ---------------------------------------------------------------
-      # 3. CAMERA EXTRINSICS -- REPLACE WITH CALIBRATED VALUES
-      # ---------------------------------------------------------------
-      # T_base_camera maps camera-frame coordinates into base_link.
-      # Temporary example only. A real optical camera frame often has a
-      # nonzero rotation because its axes differ from base_link's axes.
-      self.camera_xyz = (0.07, 0.0, 0.12)
-      self.camera_rpy = (-math.pi/2, 0.0, -math.pi/2)
-      self.T_base_camera = pose_matrix_xyz_rpy(
-          *self.camera_xyz, *self.camera_rpy
-      )
+        # ---------------------------------------------------------------
+        # 1. FRAME NAMES
+        # ---------------------------------------------------------------
+        self.world_frame = 'odom'
+        self.base_frame = 'base_link'
+        self.camera_frame = 'camera_frame'
 
-      # ---------------------------------------------------------------
-      # 4. WAYPOINTS
-      # ---------------------------------------------------------------
-      # Each waypoint is [x, y, heading] in meters/radians, in world_frame.
-      # The robot does NOT have to start at waypoint 0.
-      self.waypoints = np.array([
-          [0.00, 0.00, 0],               
-          [1.00, 0.00, 0],       
-          [1.00, 1.00, math.pi],               
-          [0.00, 0.00, 0],      
-      ], dtype=float)
-      
-      
-      # ---------------------------------------------------------------
-      # 5. CONTROL / CALIBRATION SETTINGS
-      # ---------------------------------------------------------------
-      # These are controller velocity limits, not the motor mapping slopes
-      # or deadzones in VelocityToMotorNode.
+        # ---------------------------------------------------------------
+        # 2. KNOWN APRILTAG WORLD POSES
+        # Frame name -> (x, y, z, roll, pitch, yaw)
+        # These are physical tag poses, not waypoint positions.
+        # ---------------------------------------------------------------
+        self.tag_poses_world = {
+            'tag_0': (1.20, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
+            'tag_1': (1.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),
+            'tag_2': (0.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),
+            'tag_3': (0.00, -0.85, 0.05, -math.pi / 2, 0, math.pi),
+        }
 
-      self.k_v = 0.12
-      self.k_omega = 0.70
-      self.k_omega_search = 0.20
-  
-      self.control_period = 0.10
-      self.k_heading = 1.8
-      self.k_distance = 0.8
-  
-      self.max_step_distance = 0.025
-      self.position_tolerance = 0.035
-      self.heading_tolerance = 0.10
+        # ---------------------------------------------------------------
+        # 3. CAMERA EXTRINSICS
+        # T_base_camera maps camera-frame coordinates into base_link.
+        # Preserved from the supplied script.
+        # ---------------------------------------------------------------
+        self.camera_xyz = (0.07, 0.0, 0.12)
+        self.camera_rpy = (-math.pi / 2, 0.0, -math.pi / 2)
+        self.T_base_camera = pose_matrix_xyz_rpy(
+            *self.camera_xyz, *self.camera_rpy
+        )
 
-      # Heading error must remain above heading_tolerance this long
-      # before the controller starts an in-place turn.
-      self.turn_delay = 2.50  # seconds
-      self.heading_error_start: Optional[float] = None
-  
-      self.tag_timeout = 10.0
-  
-      self.search_turn_duration = 0.20
-      self.search_pause_duration = 0.40
-      self.search_turn_sign = -1.0
-  
-      self.search_phase = None
-      self.search_phase_until = None
-  
-      self.last_tag_diagnostic_time = 0.0
-      
-      # ---------------------------------------------------------------
-      # ROS communication
-      # ---------------------------------------------------------------
-      self.current_waypoint_idx = 0
-      self.searching_until: Optional[float] = None
-      self.searching = False
-      self.finished = False
+        # ---------------------------------------------------------------
+        # 4. WAYPOINTS: [x, y, heading] in world_frame
+        # Preserved from the supplied script.
+        # ---------------------------------------------------------------
+        self.waypoints = np.array([
+            [0.00, 0.00, 0.0],
+            [1.00, 0.00, 0.0],
+            [1.00, 1.00, math.pi],
+            [0.00, 0.00, 0.0],
+        ], dtype=float)
 
-      self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-      self.tf_buffer = Buffer()
-      self.tf_listener = TransformListener(self.tf_buffer, self)
+        # ---------------------------------------------------------------
+        # 5. MOTION AND OBSERVATION SETTINGS
+        # ---------------------------------------------------------------
+        self.k_v = 0.12
+        self.k_omega = 0.70
+        self.k_heading = 1.8
+        self.k_distance = 0.8
 
-      self.timer = self.create_timer(self.control_period, self.control_loop)
+        self.control_period = 0.10
 
-      self.get_logger().info(
-          'AprilTag waypoint controller started. Replace sample tag poses, '
-          'waypoints, and camera extrinsics before driving.'
-      )
-      # in __init__:
-      self.pose_pub = self.create_publisher(PoseStamped, '/robot_pose_estimate', 10)
+        # Each movement command is held for this long, then the robot stops.
+        self.move_duration = 2.0
 
-    def get_visible_known_tag(self):
+        # After stopping, wait at least this long before using a new image.
+        self.observation_pause = 2.0
+
+        # TF may arrive late due to camera/detector latency. This is only
+        # an upper age bound; old observations are never reused across cycles.
+        self.tag_max_age = 5.0
+
+        self.position_tolerance = 0.035
+        self.heading_tolerance = 0.10
+
+        # Forward speed is still capped by k_v. At k_v=0.12 m/s,
+        # a full 2-second drive window can cover up to about 0.24 m.
+
+        # ---------------------------------------------------------------
+        # 6. STATE
+        # ---------------------------------------------------------------
+        self.current_waypoint_idx = 0
+        self.finished = False
+
+        # Start in OBSERVE. At startup, do not impose an extra 2-second pause;
+        # wait for the first currently available recent tag observation.
+        self.phase = 'observe'
+        self.phase_started_at = self._now_seconds()
+        self.observe_ready_at = self.phase_started_at
+        self.require_stamp_after = 0.0
+
+        self.active_command = Twist()
+        self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
+        self.last_no_tag_log_time = 0.0
+
+        # ---------------------------------------------------------------
+        # 7. ROS COMMUNICATION
+        # ---------------------------------------------------------------
+        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.pose_pub = self.create_publisher(
+            PoseStamped, '/robot_pose_estimate', 10
+        )
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.timer = self.create_timer(
+            self.control_period, self.control_loop
+        )
+
+        self.get_logger().info(
+            'Stop-and-go AprilTag controller started: '
+            f'move={self.move_duration:.1f}s, '
+            f'observation pause={self.observation_pause:.1f}s, '
+            f'max TF age={self.tag_max_age:.1f}s. '
+            'The robot will remain stopped if no fresh known tag is available.'
+        )
+
+    def _now_seconds(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def publish_stop(self):
+        self.cmd_pub.publish(Twist())
+
+    def get_new_known_tag(self):
         """
-        Return (tag_frame, T_camera_tag) for the first known, recent tag TF found.
+        Return (tag_frame, T_camera_tag, stamp_seconds) for a recent tag
+        observation not already consumed in a previous localization cycle.
+
+        The timestamp must be newer than the last observation used for that
+        tag and newer than the time the previous movement ended.
         """
-        now_seconds = self.get_clock().now().nanoseconds * 1e-9
+        now_seconds = self._now_seconds()
 
         for tag_frame in self.tag_poses_world:
             try:
@@ -224,7 +234,13 @@ class AprilTagWaypointController(Node):
                     Time(),
                     timeout=Duration(seconds=0.02),
                 )
-            except TransformException:
+            except TransformException as exc:
+                # Log lookup failures occasionally rather than on every timer tick.
+                if now_seconds - self.last_no_tag_log_time >= 1.0:
+                    self.get_logger().warning(
+                        f'TF lookup failed camera_frame -> {tag_frame}: {exc}'
+                    )
+                    self.last_no_tag_log_time = now_seconds
                 continue
 
             stamp = tf_msg.header.stamp
@@ -233,205 +249,229 @@ class AprilTagWaypointController(Node):
                 continue
 
             age = now_seconds - stamp_seconds
-            if age > self.tag_timeout or age < -0.10:
+
+            if age < -0.10 or age > self.tag_max_age:
                 continue
 
-            return tag_frame, transform_to_matrix(tf_msg)
+            if stamp_seconds <= self.last_used_tag_stamp[tag_frame]:
+                continue
 
-        return None, None
+            if stamp_seconds <= self.require_stamp_after:
+                continue
+
+            return tag_frame, transform_to_matrix(tf_msg), stamp_seconds
+
+        return None, None, None
 
     def estimate_world_robot_pose(self, tag_frame: str, T_camera_tag):
         """
-        Estimate T_world_base from the known tag world pose and observed
-        camera-to-tag transform.
+        Estimate T_world_base from the known tag pose and observed
+        camera-to-tag transform:
 
         T_world_base = T_world_tag @ inverse(T_base_camera @ T_camera_tag)
         """
-        tag_pose = self.tag_poses_world[tag_frame]
-        T_world_tag = pose_matrix_xyz_rpy(*tag_pose)
-
-        # T_base_tag: tag coordinates transformed into the robot base frame.
+        T_world_tag = pose_matrix_xyz_rpy(
+            *self.tag_poses_world[tag_frame]
+        )
         T_base_tag = self.T_base_camera @ T_camera_tag
-
-        # T_world_robot/base: robot pose in the world coordinate frame.
         return T_world_tag @ inverse_transform(T_base_tag)
 
-    def publish_stop(self):
-        self.cmd_pub.publish(Twist())
+    def calculate_motion_command(
+        self, robot_x: float, robot_y: float, robot_yaw: float
+    ):
+        """Calculate the next fixed-duration command from one localized pose."""
+        waypoint = self.waypoints[self.current_waypoint_idx]
 
-    def turn_delay_elapsed(self, heading_error: float, now: float) -> bool:
-        """Return True only after a large heading error persists for turn_delay."""
-        if abs(heading_error) <= self.heading_tolerance:
-            self.heading_error_start = None
-            return False
+        dx = float(waypoint[0] - robot_x)
+        dy = float(waypoint[1] - robot_y)
+        distance_error = math.hypot(dx, dy)
 
-        if self.heading_error_start is None:
-            self.heading_error_start = now
-            return False
+        if distance_error > 1e-6:
+            desired_heading = math.atan2(dy, dx)
+        else:
+            desired_heading = float(waypoint[2])
 
-        return (now - self.heading_error_start) >= self.turn_delay
-    
-    def begin_search_turn(self, now: float):
-      """Alternate between a short search turn and a stationary observation pause."""
-  
-      if self.search_phase is None:
-          self.search_phase = 'turn'
-          self.search_phase_until = now + self.search_turn_duration
-          self.get_logger().warning(
-              'No usable known-tag transform. Starting search turn.'
-          )
-  
-      cmd = Twist()
-  
-      if self.search_phase == 'turn':
-          if now < self.search_phase_until:
-              cmd.linear.x = 0.0
-              cmd.angular.z = (
-                  self.search_turn_sign * self.k_omega_search
-              )
-              self.cmd_pub.publish(cmd)
-              return
-  
-          self.search_phase = 'pause'
-          self.search_phase_until = now + self.search_pause_duration
-  
-          self.get_logger().info(
-              f'Search turn finished. Stopping to observe for '
-              f'{self.search_pause_duration:.2f} s.'
-          )
-          self.publish_stop()
-          return
-  
-      if self.search_phase == 'pause':
-          self.publish_stop()
-  
-          if now >= self.search_phase_until:
-              self.search_phase = 'turn'
-              self.search_phase_until = now + self.search_turn_duration
-  
-              self.get_logger().info(
-                  'No usable tag pose during observation. Resuming search.'
-              )
+        heading_error = wrap_angle(desired_heading - robot_yaw)
+        cmd = Twist()
+
+        # First navigate to the waypoint position.
+        if distance_error > self.position_tolerance:
+            if abs(heading_error) > self.heading_tolerance:
+                # Turn in place for one movement window, then stop and relocalize.
+                cmd.linear.x = 0.0
+                cmd.angular.z = float(np.clip(
+                    self.k_heading * heading_error,
+                    -self.k_omega,
+                    self.k_omega,
+                ))
+                action = 'turn'
+            else:
+                desired_speed = min(
+                    self.k_v,
+                    max(0.0, self.k_distance * distance_error),
+                )
+                cmd.linear.x = desired_speed
+                cmd.angular.z = float(np.clip(
+                    self.k_heading * heading_error,
+                    -self.k_omega,
+                    self.k_omega,
+                ))
+                action = 'drive'
+        else:
+            # At the waypoint position: align to its requested final heading.
+            final_heading_error = wrap_angle(
+                float(waypoint[2]) - robot_yaw
+            )
+            if abs(final_heading_error) > self.heading_tolerance:
+                cmd.linear.x = 0.0
+                cmd.angular.z = float(np.clip(
+                    self.k_heading * final_heading_error,
+                    -self.k_omega,
+                    self.k_omega,
+                ))
+                action = 'final_heading_turn'
+            else:
+                action = 'reached'
+
+        return cmd, action, dx, dy, heading_error, distance_error
+
+    def begin_observation_phase(self, now: float, require_new_after_stop: bool):
+        """Stop and wait before accepting the next distinct tag observation."""
+        self.phase = 'observe'
+        self.phase_started_at = now
+        self.observe_ready_at = now + self.observation_pause
+
+        if require_new_after_stop:
+            # Require an image/TF observation timestamped after the stop began.
+            self.require_stamp_after = now
+
+        self.active_command = Twist()
+        self.publish_stop()
+
+        self.get_logger().info(
+            f'Stopped. Waiting {self.observation_pause:.1f}s before '
+            'localizing again.'
+        )
+
+    def start_movement(self, cmd: Twist, tag_frame: str, stamp_seconds: float,
+                       now: float, action: str):
+        """Consume this observation and execute its command for move_duration."""
+        self.last_used_tag_stamp[tag_frame] = stamp_seconds
+        self.active_command = cmd
+        self.phase = 'move'
+        self.phase_started_at = now
+
+        self.get_logger().info(
+            f'New localization from {tag_frame} '
+            f'(TF age={max(0.0, now - stamp_seconds):.2f}s). '
+            f'Action={action}; executing for {self.move_duration:.1f}s: '
+            f'v={cmd.linear.x:.3f}, w={cmd.angular.z:.3f}'
+        )
 
     def control_loop(self):
-      now = self.get_clock().now().nanoseconds * 1e-9
-      if self.finished or self.current_waypoint_idx >= len(self.waypoints):
-        self.finished = True
+        now = self._now_seconds()
+
+        if self.finished or self.current_waypoint_idx >= len(self.waypoints):
+            self.finished = True
+            self.publish_stop()
+            return
+
+        # ---------------------------------------------------------------
+        # MOVE PHASE: keep the selected command active for a fixed window.
+        # No new localization is used while the robot is moving.
+        # ---------------------------------------------------------------
+        if self.phase == 'move':
+            elapsed = now - self.phase_started_at
+
+            if elapsed < self.move_duration:
+                self.cmd_pub.publish(self.active_command)
+                return
+
+            # Movement window is over. Stop immediately and begin observing.
+            self.begin_observation_phase(
+                now, require_new_after_stop=True
+            )
+            return
+
+        # ---------------------------------------------------------------
+        # OBSERVE PHASE: remain stopped. Wait for the pause and a new TF.
+        # ---------------------------------------------------------------
         self.publish_stop()
-        return
-  
-      tag_frame, T_camera_tag = self.get_visible_known_tag()
-  
-      if T_camera_tag is None:
-          # Do not let time spent without a usable tag count toward the turn delay.
-          self.heading_error_start = None
-          self.begin_search_turn(now)
-          return
-  
-      # A usable tag transform was found. Immediately interrupt the search.
-      if self.search_phase is not None:
-          self.get_logger().info(
-              f'Usable transform found for {tag_frame}. '
-              'Exiting search and localizing.'
-          )
-  
-      self.search_phase = None
-      self.search_phase_until = None
-  
-      T_world_robot = self.estimate_world_robot_pose(
-          tag_frame, T_camera_tag
-      )
-      robot_x = float(T_world_robot[0, 3])
-      robot_y = float(T_world_robot[1, 3])
-      robot_yaw = rotation_matrix_to_yaw(T_world_robot[:3, :3])
-      
-      
-      # NEW TOPIC FOR LOGGING
-      
-      pose_msg = PoseStamped()
-      pose_msg.header.stamp = self.get_clock().now().to_msg()
-      pose_msg.header.frame_id = f'{self.world_frame}|{tag_frame}'   # 'odom'
-      pose_msg.pose.position.x = robot_x
-      pose_msg.pose.position.y = robot_y
-      pose_msg.pose.position.z = 0.0
-      # yaw -> quaternion (only yaw, since planar)
-      pose_msg.pose.orientation.z = math.sin(robot_yaw / 2.0)
-      pose_msg.pose.orientation.w = math.cos(robot_yaw / 2.0)
-      self.pose_pub.publish(pose_msg)
 
-      waypoint = self.waypoints[self.current_waypoint_idx]
-      dx = float(waypoint[0] - robot_x)
-      dy = float(waypoint[1] - robot_y)
-      distance_error = math.hypot(dx, dy)
+        if now < self.observe_ready_at:
+            return
 
-      desired_heading = (
-          math.atan2(dy, dx) if distance_error > 1e-6 else float(waypoint[2])
-      )
-      heading_error = wrap_angle(desired_heading - robot_yaw)
+        tag_frame, T_camera_tag, tag_stamp = self.get_new_known_tag()
 
-      cmd = Twist()
+        if T_camera_tag is None:
+            if now - self.last_no_tag_log_time >= 1.0:
+                self.get_logger().info(
+                    'Still stopped; waiting for a new AprilTag observation '
+                    'captured after the previous movement.'
+                )
+                self.last_no_tag_log_time = now
+            return
 
-      # First reach the waypoint position, then align to its requested heading.
-      if distance_error > self.position_tolerance:
-          if abs(heading_error) > self.heading_tolerance:
-              # Wait for a persistent heading error before turning in place.
-              if self.turn_delay_elapsed(heading_error, now):
-                  angular = self.k_heading * heading_error
-                  cmd.angular.z = float(np.clip(
-                      angular, -self.k_omega, self.k_omega
-                  ))
-              else:
-                  # Error has not persisted long enough; remain stopped.
-                  cmd.angular.z = 0.0
-              cmd.linear.x = 0.0
-          else:
-              self.heading_error_start = None
-              desired_speed = min(
-                  self.k_v,
-                  max(0.0, self.k_distance * distance_error),
-              )
-              cmd.linear.x = min(
-                  desired_speed,
-                  self.max_step_distance / self.control_period,
-              )
-              cmd.angular.z = float(np.clip(
-                  self.k_heading * heading_error, -self.k_omega, self.k_omega
-              ))
-      else:
-          final_heading_error = wrap_angle(float(waypoint[2]) - robot_yaw)
-          if abs(final_heading_error) > self.heading_tolerance:
-              # Apply the same persistence delay when aligning at the waypoint.
-              if self.turn_delay_elapsed(final_heading_error, now):
-                  cmd.angular.z = float(np.clip(
-                      self.k_heading * final_heading_error,
-                      -self.k_omega,
-                      self.k_omega,
-                  ))
-              else:
-                  cmd.angular.z = 0.0
-              cmd.linear.x = 0.0
-          else:
-              self.heading_error_start = None
-              self.publish_stop()
-              self.get_logger().info(
-                  f'Reached waypoint {self.current_waypoint_idx}: '
-                  f'position error={distance_error:.3f} m; tag frame={tag_frame}'
-              )
-              self.current_waypoint_idx += 1
-              return
+        T_world_robot = self.estimate_world_robot_pose(
+            tag_frame, T_camera_tag
+        )
+        robot_x = float(T_world_robot[0, 3])
+        robot_y = float(T_world_robot[1, 3])
+        robot_yaw = rotation_matrix_to_yaw(T_world_robot[:3, :3])
 
-      self.cmd_pub.publish(cmd)
-      self.get_logger().info(
-        f'tag={tag_frame} wp={self.current_waypoint_idx} '
-        f'pose=({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}) '
-        f'error=({dx:.3f}, {dy:.3f}, {heading_error:.3f}) '
-        f'cmd=(v={cmd.linear.x:.3f}, w={cmd.angular.z:.3f})'
+        # Publish the pose estimate for visualization/logging.
+        pose_msg = PoseStamped()
+        pose_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_msg.header.frame_id = f'{self.world_frame}|{tag_frame}'
+        pose_msg.pose.position.x = robot_x
+        pose_msg.pose.position.y = robot_y
+        pose_msg.pose.position.z = 0.0
+        pose_msg.pose.orientation.z = math.sin(robot_yaw / 2.0)
+        pose_msg.pose.orientation.w = math.cos(robot_yaw / 2.0)
+        self.pose_pub.publish(pose_msg)
+
+        cmd, action, dx, dy, heading_error, distance_error = (
+            self.calculate_motion_command(robot_x, robot_y, robot_yaw)
+        )
+
+        self.get_logger().info(
+            f'LOCALIZED tag={tag_frame} '
+            f'pose=({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}) '
+            f'waypoint={self.current_waypoint_idx} '
+            f'error_xy=({dx:.3f}, {dy:.3f}) '
+            f'heading_error={heading_error:.3f} '
+            f'distance={distance_error:.3f}'
+        )
+
+        if action == 'reached':
+            self.last_used_tag_stamp[tag_frame] = tag_stamp
+            self.get_logger().info(
+                f'Reached waypoint {self.current_waypoint_idx}: '
+                f'position error={distance_error:.3f}m.'
+            )
+            self.current_waypoint_idx += 1
+
+            if self.current_waypoint_idx >= len(self.waypoints):
+                self.finished = True
+                self.publish_stop()
+                self.get_logger().info('All waypoints reached.')
+                return
+
+            # Require a new observation before planning for the next waypoint.
+            self.begin_observation_phase(
+                now, require_new_after_stop=True
+            )
+            return
+
+        self.start_movement(
+            cmd, tag_frame, tag_stamp, now, action
         )
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = AprilTagWaypointController()
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
