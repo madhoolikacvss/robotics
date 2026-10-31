@@ -125,7 +125,7 @@ class AprilTagWaypointController(Node):
       # world frame, using the same convention as your TF publisher.
       self.tag_poses_world = {
           'tag_0': (1.20, 0.00, 0.05, math.pi/2,0.0, -math.pi/2),             
-          'tag_1': (1.00, 1.80, 0.05, 0.0, 0.0, math.pi / 2),     
+          'tag_1': (1.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),     
           'tag_2': (0.0, 1.20, 0.05, 0.0, 0.0, math.pi / 2),        
           'tag_5': (0.0, -0.20, 0.05, 0.0, 0.0, - math.pi / 2),   
       }
