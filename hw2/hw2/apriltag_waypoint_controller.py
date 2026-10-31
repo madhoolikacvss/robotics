@@ -116,10 +116,10 @@ class AprilTagWaypointController(Node):
         # These are physical tag poses, not waypoint positions.
         # ---------------------------------------------------------------
         self.tag_poses_world = {
-            'tag_0': (1.50, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
+            'tag_0': (1.20, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
             'tag_1': (1.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),
             'tag_2': (0.00, 1.20, 0.05, 0.0, 0.0, math.pi / 2),
-            'tag_3': (0.00, -0.85, 0.05, -math.pi / 2, 0, math.pi),
+            'tag_3': (0.00, -0.85, 0.05, math.pi / 2, -math.pi / 2, -math.pi / 2),
         }
 
         # ---------------------------------------------------------------
@@ -218,15 +218,30 @@ class AprilTagWaypointController(Node):
 
     def get_new_known_tag(self):
         """
-        Return (tag_frame, T_camera_tag, stamp_seconds) for a recent tag
-        observation not already consumed in a previous localization cycle.
+        Return the first available known tag with a recent, unused observation.
 
-        The timestamp must be newer than the last observation used for that
-        tag and newer than the time the previous movement ended.
+        Tags need not be visible simultaneously. Missing tag frames are
+        silently skipped. The timestamp must be newer than the last observation
+        used for that tag and newer than the time the previous movement ended.
         """
         now_seconds = self._now_seconds()
 
         for tag_frame in self.tag_poses_world:
+            # Tags are not expected to be visible simultaneously. Check each
+            # known tag independently and silently skip frames absent from TF.
+            try:
+                available = self.tf_buffer.can_transform(
+                    self.camera_frame,
+                    tag_frame,
+                    Time(),
+                    timeout=Duration(seconds=0.02),
+                )
+            except TransformException:
+                continue
+
+            if not available:
+                continue
+
             try:
                 tf_msg = self.tf_buffer.lookup_transform(
                     self.camera_frame,
@@ -234,13 +249,8 @@ class AprilTagWaypointController(Node):
                     Time(),
                     timeout=Duration(seconds=0.02),
                 )
-            except TransformException as exc:
-                # Log lookup failures occasionally rather than on every timer tick.
-                if now_seconds - self.last_no_tag_log_time >= 1.0:
-                    self.get_logger().warning(
-                        f'TF lookup failed camera_frame -> {tag_frame}: {exc}'
-                    )
-                    self.last_no_tag_log_time = now_seconds
+            except TransformException:
+                # The transform may disappear between can_transform and lookup.
                 continue
 
             stamp = tf_msg.header.stamp
