@@ -138,7 +138,7 @@ class AprilTagWaypointController(Node):
         # Preserved from the supplied script.
         # ---------------------------------------------------------------
         self.waypoints = np.array([
-            [0.00, 0.00, 0.0],
+            # [0.00, 0.00, 0.0],
             [1.00, 0.00, 0.0],
             [1.00, 1.00, math.pi],
             [0.00, 0.00, 0.0],
