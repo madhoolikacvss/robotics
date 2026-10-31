@@ -6,19 +6,9 @@ Control cycle:
   1. Stop and wait for the observation pause to finish.
   2. Wait for a NEW AprilTag TF observation captured after the previous move.
   3. Estimate the robot pose from the known tag pose and camera extrinsics.
-  4. Calculate one velocity command and its required movement duration.
+  4. Calculate one velocity command and its required movement duration (both linear & angular).
   5. Execute that command for the precise movement duration.
   6. Stop, wait, and localize again.
-
-Unlike the previous controller, this node does not rotate to search for tags.
-If no fresh known-tag transform is available, it remains stopped.
-
-IMPORTANT:
-  - TAG_POSES_WORLD must contain measured physical tag poses in the world frame.
-  - WAYPOINTS are [x, y, heading] in the same world frame.
-  - T_base_camera maps camera-frame coordinates into base_link.
-  - Confirm camera_frame and tag frame names match the TF tree.
-  - Test with the robot lifted and at low speeds first.
 """
 
 import math
@@ -112,19 +102,16 @@ class AprilTagWaypointController(Node):
 
         # ---------------------------------------------------------------
         # 2. KNOWN APRILTAG WORLD POSES
-        # Frame name -> (x, y, z, roll, pitch, yaw)
-        # These are physical tag poses, not waypoint positions.
         # ---------------------------------------------------------------
         self.tag_poses_world = {
             'tag_0': (1.60, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
-            'tag_1': (1.00, 1.20, 0.05, math.pi / 2, 0.0, -math.pi),
-            'tag_2': (0.00, 1.20, 0.05, math.pi / 2, 0.0, 0),
-            'tag_3': (0.00, -0.85, 0.05, math.pi / 2, 0.0, 0),
+            'tag_1': (1.00, 1.20, 0.05, math.pi / 2, 0.0, 0.0),
+            'tag_2': (0.00, 1.20, 0.05, math.pi / 2, 0.0, math.pi / 2),
+            'tag_3': (0.00, -0.85, 0.05, math.pi / 2, 0.0, math.pi),
         }
 
         # ---------------------------------------------------------------
         # 3. CAMERA EXTRINSICS
-        # T_base_camera maps camera-frame coordinates into base_link.
         # ---------------------------------------------------------------
         self.camera_xyz = (0.07, 0.0, 0.12)
         self.camera_rpy = (-math.pi / 2, 0.0, -math.pi / 2)
@@ -151,16 +138,16 @@ class AprilTagWaypointController(Node):
 
         self.control_period = 0.10
 
-        # Default movement window (used as fallback for linear driving)
+        # Maximum movement window cap
         self.move_duration = 2.0
 
         # After stopping, wait at least this long before using a new image.
         self.observation_pause = 2.0
 
-        # TF may arrive late due to camera/detector latency.
         self.tag_max_age = 5.0
 
-        self.position_tolerance = 0.035
+        # Increased tolerance to 0.2 meters as requested
+        self.position_tolerance = 0.2
         self.heading_tolerance = 0.2
 
         # ---------------------------------------------------------------
@@ -196,8 +183,8 @@ class AprilTagWaypointController(Node):
 
         self.get_logger().info(
             'Stop-and-go AprilTag controller started: '
-            f'default move duration={self.move_duration:.1f}s, '
-            f'observation pause={self.observation_pause:.1f}s.'
+            f'max move duration={self.move_duration:.1f}s, '
+            f'position tolerance={self.position_tolerance:.2f}m.'
         )
 
     def _now_seconds(self) -> float:
@@ -292,12 +279,13 @@ class AprilTagWaypointController(Node):
                 ))
                 action = 'turn'
                 
-                # Dynamically set duration = angle / angular_velocity
+                # Dynamic duration for turn: angle / angular_velocity
                 if abs(cmd.angular.z) > 1e-6:
-                    move_duration = abs(heading_error) / abs(cmd.angular.z)
+                    move_duration = min(self.move_duration, abs(heading_error) / abs(cmd.angular.z))
                 else:
                     move_duration = 0.0
             else:
+                # Drive forward towards waypoint
                 desired_speed = min(
                     self.k_v,
                     max(0.0, self.k_distance * distance_error),
@@ -309,8 +297,12 @@ class AprilTagWaypointController(Node):
                     self.k_omega,
                 ))
                 action = 'drive'
-                # Keep fixed or scale linear drive duration if desired
-                move_duration = self.move_duration
+                
+                # Dynamic duration for drive: distance / speed (capped at max move_duration)
+                if abs(cmd.linear.x) > 1e-6:
+                    move_duration = min(self.move_duration, distance_error / abs(cmd.linear.x))
+                else:
+                    move_duration = 0.0
         else:
             # At waypoint position: align to final heading.
             final_heading_error = wrap_angle(
@@ -325,9 +317,9 @@ class AprilTagWaypointController(Node):
                 ))
                 action = 'final_heading_turn'
                 
-                # Dynamically set duration = angle / angular_velocity
+                # Dynamic duration for final turn: angle / angular_velocity
                 if abs(cmd.angular.z) > 1e-6:
-                    move_duration = abs(final_heading_error) / abs(cmd.angular.z)
+                    move_duration = min(self.move_duration, abs(final_heading_error) / abs(cmd.angular.z))
                 else:
                     move_duration = 0.0
             else:
@@ -385,7 +377,6 @@ class AprilTagWaypointController(Node):
                 self.cmd_pub.publish(self.active_command)
                 return
 
-            # Movement window is over. Stop immediately and begin observing.
             self.begin_observation_phase(
                 now, require_new_after_stop=True
             )
@@ -434,7 +425,7 @@ class AprilTagWaypointController(Node):
             f'LOCALIZED tag={tag_frame} '
             f'pose=({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}) '
             f'waypoint={self.current_waypoint_idx} '
-            f'heading_error={heading_error:.3f} '
+            f'distance_err={distance_error:.3f} '
             f'calc_duration={move_duration:.3f}s'
         )
 
