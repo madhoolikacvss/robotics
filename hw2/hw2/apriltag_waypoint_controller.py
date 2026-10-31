@@ -265,6 +265,7 @@ class AprilTagWaypointController(Node):
 
         heading_error = wrap_angle(desired_heading - robot_yaw)
         cmd = Twist()
+        move_duration = 0.0  # Initialize default to prevent UnboundLocalError
 
         # First navigate to the waypoint position.
         if distance_error > self.position_tolerance:
@@ -312,9 +313,10 @@ class AprilTagWaypointController(Node):
                 move_duration = min(self.move_duration, required_time)
             else:
                 action = 'reached'
+                move_duration = 0.0
 
         return cmd, action, dx, dy, heading_error, distance_error, move_duration
-
+    
     
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
         """Stop and wait before accepting the next distinct tag observation."""
