@@ -153,8 +153,8 @@ class AprilTagWaypointController(Node):
         self.no_tag_search_angle = math.radians(20.0)
 
         # Increased tolerance to 0.2 meters as requested
-        self.position_tolerance = 0.13
-        self.heading_tolerance = 0.13
+        self.position_tolerance = 0.10
+        self.heading_tolerance = 0.10
 
         # ---------------------------------------------------------------
         # 6. STATE
@@ -202,9 +202,8 @@ class AprilTagWaypointController(Node):
         # Therefore, the estimated effective angular rates are:
         #   k_omega * (0.3 - (-0.3)) = k_omega * 0.6
         #
-        # These are INITIAL ESTIMATES, not verified HW2 measurements.
-        self.hw1_k_omega_right = 3.85
-        self.hw1_k_omega_left = 3.80
+        self.hw1_k_omega_right = 3.05 # 3.85 
+        self.hw1_k_omega_left = 3.00 # 3.80
         self.estimated_motor_command_magnitude = 0.30
         
         self.estimated_turn_rate_ccw = (
@@ -249,6 +248,25 @@ class AprilTagWaypointController(Node):
             )
             self.position_log_file.flush()
 
+        self.waypoint_log_path = Path(
+            self.declare_parameter(
+                'waypoint_log_path', 'waypoint_results.csv'
+            ).value
+        ).expanduser()
+        self.waypoint_log_file = self.waypoint_log_path.open(
+            'a', newline='', encoding='utf-8'
+        )
+        self.waypoint_log_writer = csv.writer(self.waypoint_log_file)
+        if self.waypoint_log_path.stat().st_size == 0:
+            self.waypoint_log_writer.writerow([
+                'timestamp_sec', 'frame', 'waypoint_index',
+                'target_x', 'target_y', 'target_yaw_rad',
+                'estimated_x', 'estimated_y', 'estimated_yaw_rad',
+                'error_x', 'error_y', 'position_error_m',
+                'heading_error_rad',
+            ])
+            self.waypoint_log_file.flush()
+
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -263,7 +281,8 @@ class AprilTagWaypointController(Node):
             'Stop-and-go AprilTag controller started: '
             f'max move duration={self.move_duration:.1f}s, '
             f'position tolerance={self.position_tolerance:.2f}m. '
-            f'Writing estimated poses to {self.position_log_path}.'
+            f'Writing estimated poses to {self.position_log_path} and '
+            f'waypoint results to {self.waypoint_log_path}.'
         )
 
     def _now_seconds(self) -> float:
@@ -282,8 +301,38 @@ class AprilTagWaypointController(Node):
         ])
         self.position_log_file.flush()
 
+    def write_waypoint_result(
+        self,
+        robot_x: float,
+        robot_y: float,
+        robot_yaw: float,
+        dx: float,
+        dy: float,
+        distance_error: float,
+        heading_error: float,
+    ):
+        """Append the estimated pose and errors for a completed waypoint."""
+        waypoint = self.waypoints[self.current_waypoint_idx]
+        self.waypoint_log_writer.writerow([
+            f'{self._now_seconds():.9f}',
+            self.world_frame,
+            self.current_waypoint_idx,
+            f'{waypoint[0]:.6f}',
+            f'{waypoint[1]:.6f}',
+            f'{waypoint[2]:.6f}',
+            f'{robot_x:.6f}',
+            f'{robot_y:.6f}',
+            f'{robot_yaw:.6f}',
+            f'{dx:.6f}',
+            f'{dy:.6f}',
+            f'{distance_error:.6f}',
+            f'{heading_error:.6f}',
+        ])
+        self.waypoint_log_file.flush()
+
     def destroy_node(self):
         self.position_log_file.close()
+        self.waypoint_log_file.close()
         return super().destroy_node()
 
     def publish_stop(self):
@@ -576,8 +625,6 @@ class AprilTagWaypointController(Node):
         if T_camera_tag is None:
             if now < self.observe_ready_at:
                 return
-            # FIXME
-            return
             self.start_tag_search_turn(now)
             return
 
@@ -624,11 +671,16 @@ class AprilTagWaypointController(Node):
         if action == 'reached':
             # The final heading is aligned. Only now is this waypoint complete.
             self.last_used_tag_stamp[tag_frame] = tag_stamp
+            self.write_waypoint_result(
+                robot_x, robot_y, robot_yaw, dx, dy,
+                distance_error, heading_error,
+            )
             self.get_logger().info(
                 f'Reached waypoint {self.current_waypoint_idx}: '
                 f'final heading aligned; '
                 f'position error={distance_error:.3f}m, '
-                f'heading error={heading_error:.3f}rad.'
+                f'heading error={heading_error:.3f}rad. '
+                f'Result written to {self.waypoint_log_path}.'
             )
             self.current_waypoint_idx += 1
 
