@@ -6,8 +6,8 @@ Control cycle:
   1. Stop and wait for the observation pause to finish.
   2. Wait for a NEW AprilTag TF observation captured after the previous move.
   3. Estimate the robot pose from the known tag pose and camera extrinsics.
-  4. Calculate one velocity command.
-  5. Execute that command for a fixed movement window.
+  4. Calculate one velocity command and its required movement duration.
+  5. Execute that command for the precise movement duration.
   6. Stop, wait, and localize again.
 
 Unlike the previous controller, this node does not rotate to search for tags.
@@ -125,7 +125,6 @@ class AprilTagWaypointController(Node):
         # ---------------------------------------------------------------
         # 3. CAMERA EXTRINSICS
         # T_base_camera maps camera-frame coordinates into base_link.
-        # Preserved from the supplied script.
         # ---------------------------------------------------------------
         self.camera_xyz = (0.07, 0.0, 0.12)
         self.camera_rpy = (-math.pi / 2, 0.0, -math.pi / 2)
@@ -135,10 +134,8 @@ class AprilTagWaypointController(Node):
 
         # ---------------------------------------------------------------
         # 4. WAYPOINTS: [x, y, heading] in world_frame
-        # Preserved from the supplied script.
         # ---------------------------------------------------------------
         self.waypoints = np.array([
-            # [0.00, 0.00, 0.0],
             [1.00, 0.00, 0.0],
             [1.00, 1.00, math.pi],
             [0.00, 0.00, 0.0],
@@ -154,21 +151,17 @@ class AprilTagWaypointController(Node):
 
         self.control_period = 0.10
 
-        # Each movement command is held for this long, then the robot stops.
+        # Default movement window (used as fallback for linear driving)
         self.move_duration = 2.0
 
         # After stopping, wait at least this long before using a new image.
         self.observation_pause = 2.0
 
-        # TF may arrive late due to camera/detector latency. This is only
-        # an upper age bound; old observations are never reused across cycles.
+        # TF may arrive late due to camera/detector latency.
         self.tag_max_age = 5.0
 
         self.position_tolerance = 0.035
-        self.heading_tolerance = 0.10
-
-        # Forward speed is still capped by k_v. At k_v=0.12 m/s,
-        # a full 2-second drive window can cover up to about 0.24 m.
+        self.heading_tolerance = 0.2
 
         # ---------------------------------------------------------------
         # 6. STATE
@@ -176,14 +169,13 @@ class AprilTagWaypointController(Node):
         self.current_waypoint_idx = 0
         self.finished = False
 
-        # Start in OBSERVE. At startup, do not impose an extra 2-second pause;
-        # wait for the first currently available recent tag observation.
         self.phase = 'observe'
         self.phase_started_at = self._now_seconds()
         self.observe_ready_at = self.phase_started_at
         self.require_stamp_after = 0.0
 
         self.active_command = Twist()
+        self.current_move_duration = self.move_duration
         self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
         self.last_no_tag_log_time = 0.0
 
@@ -204,10 +196,8 @@ class AprilTagWaypointController(Node):
 
         self.get_logger().info(
             'Stop-and-go AprilTag controller started: '
-            f'move={self.move_duration:.1f}s, '
-            f'observation pause={self.observation_pause:.1f}s, '
-            f'max TF age={self.tag_max_age:.1f}s. '
-            'The robot will remain stopped if no fresh known tag is available.'
+            f'default move duration={self.move_duration:.1f}s, '
+            f'observation pause={self.observation_pause:.1f}s.'
         )
 
     def _now_seconds(self) -> float:
@@ -217,18 +207,10 @@ class AprilTagWaypointController(Node):
         self.cmd_pub.publish(Twist())
 
     def get_new_known_tag(self):
-        """
-        Return the first available known tag with a recent, unused observation.
-
-        Tags need not be visible simultaneously. Missing tag frames are
-        silently skipped. The timestamp must be newer than the last observation
-        used for that tag and newer than the time the previous movement ended.
-        """
+        """Return the first available known tag with a recent, unused observation."""
         now_seconds = self._now_seconds()
 
         for tag_frame in self.tag_poses_world:
-            # Tags are not expected to be visible simultaneously. Check each
-            # known tag independently and silently skip frames absent from TF.
             try:
                 available = self.tf_buffer.can_transform(
                     self.camera_frame,
@@ -250,7 +232,6 @@ class AprilTagWaypointController(Node):
                     timeout=Duration(seconds=0.02),
                 )
             except TransformException:
-                # The transform may disappear between can_transform and lookup.
                 continue
 
             stamp = tf_msg.header.stamp
@@ -259,7 +240,6 @@ class AprilTagWaypointController(Node):
                 continue
 
             age = now_seconds - stamp_seconds
-
             if age < -0.10 or age > self.tag_max_age:
                 continue
 
@@ -274,12 +254,7 @@ class AprilTagWaypointController(Node):
         return None, None, None
 
     def estimate_world_robot_pose(self, tag_frame: str, T_camera_tag):
-        """
-        Estimate T_world_base from the known tag pose and observed
-        camera-to-tag transform:
-
-        T_world_base = T_world_tag @ inverse(T_base_camera @ T_camera_tag)
-        """
+        """Estimate T_world_base from known tag pose and observed camera-to-tag transform."""
         T_world_tag = pose_matrix_xyz_rpy(
             *self.tag_poses_world[tag_frame]
         )
@@ -289,7 +264,7 @@ class AprilTagWaypointController(Node):
     def calculate_motion_command(
         self, robot_x: float, robot_y: float, robot_yaw: float
     ):
-        """Calculate the next fixed-duration command from one localized pose."""
+        """Calculate motion command and its required precise execution duration."""
         waypoint = self.waypoints[self.current_waypoint_idx]
 
         dx = float(waypoint[0] - robot_x)
@@ -303,11 +278,12 @@ class AprilTagWaypointController(Node):
 
         heading_error = wrap_angle(desired_heading - robot_yaw)
         cmd = Twist()
+        move_duration = self.move_duration
 
         # First navigate to the waypoint position.
         if distance_error > self.position_tolerance:
             if abs(heading_error) > self.heading_tolerance:
-                # Turn in place for one movement window, then stop and relocalize.
+                # Turn in place
                 cmd.linear.x = 0.0
                 cmd.angular.z = float(np.clip(
                     self.k_heading * heading_error,
@@ -315,6 +291,12 @@ class AprilTagWaypointController(Node):
                     self.k_omega,
                 ))
                 action = 'turn'
+                
+                # Dynamically set duration = angle / angular_velocity
+                if abs(cmd.angular.z) > 1e-6:
+                    move_duration = abs(heading_error) / abs(cmd.angular.z)
+                else:
+                    move_duration = 0.0
             else:
                 desired_speed = min(
                     self.k_v,
@@ -327,8 +309,10 @@ class AprilTagWaypointController(Node):
                     self.k_omega,
                 ))
                 action = 'drive'
+                # Keep fixed or scale linear drive duration if desired
+                move_duration = self.move_duration
         else:
-            # At the waypoint position: align to its requested final heading.
+            # At waypoint position: align to final heading.
             final_heading_error = wrap_angle(
                 float(waypoint[2]) - robot_yaw
             )
@@ -340,10 +324,16 @@ class AprilTagWaypointController(Node):
                     self.k_omega,
                 ))
                 action = 'final_heading_turn'
+                
+                # Dynamically set duration = angle / angular_velocity
+                if abs(cmd.angular.z) > 1e-6:
+                    move_duration = abs(final_heading_error) / abs(cmd.angular.z)
+                else:
+                    move_duration = 0.0
             else:
                 action = 'reached'
 
-        return cmd, action, dx, dy, heading_error, distance_error
+        return cmd, action, dx, dy, heading_error, distance_error, move_duration
 
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
         """Stop and wait before accepting the next distinct tag observation."""
@@ -352,29 +342,28 @@ class AprilTagWaypointController(Node):
         self.observe_ready_at = now + self.observation_pause
 
         if require_new_after_stop:
-            # Require an image/TF observation timestamped after the stop began.
             self.require_stamp_after = now
 
         self.active_command = Twist()
         self.publish_stop()
 
         self.get_logger().info(
-            f'Stopped. Waiting {self.observation_pause:.1f}s before '
-            'localizing again.'
+            f'Stopped. Waiting {self.observation_pause:.1f}s before localizing again.'
         )
 
     def start_movement(self, cmd: Twist, tag_frame: str, stamp_seconds: float,
-                       now: float, action: str):
-        """Consume this observation and execute its command for move_duration."""
+                       now: float, action: str, move_duration: float):
+        """Consume observation and execute command for the calculated duration."""
         self.last_used_tag_stamp[tag_frame] = stamp_seconds
         self.active_command = cmd
+        self.current_move_duration = move_duration
         self.phase = 'move'
         self.phase_started_at = now
 
         self.get_logger().info(
             f'New localization from {tag_frame} '
             f'(TF age={max(0.0, now - stamp_seconds):.2f}s). '
-            f'Action={action}; executing for {self.move_duration:.1f}s: '
+            f'Action={action}; executing for **{move_duration:.3f}s**: '
             f'v={cmd.linear.x:.3f}, w={cmd.angular.z:.3f}'
         )
 
@@ -387,13 +376,12 @@ class AprilTagWaypointController(Node):
             return
 
         # ---------------------------------------------------------------
-        # MOVE PHASE: keep the selected command active for a fixed window.
-        # No new localization is used while the robot is moving.
+        # MOVE PHASE: keep command active for the precise calculated duration.
         # ---------------------------------------------------------------
         if self.phase == 'move':
             elapsed = now - self.phase_started_at
 
-            if elapsed < self.move_duration:
+            if elapsed < self.current_move_duration:
                 self.cmd_pub.publish(self.active_command)
                 return
 
@@ -404,7 +392,7 @@ class AprilTagWaypointController(Node):
             return
 
         # ---------------------------------------------------------------
-        # OBSERVE PHASE: remain stopped. Wait for the pause and a new TF.
+        # OBSERVE PHASE: remain stopped. Wait for pause and new TF.
         # ---------------------------------------------------------------
         self.publish_stop()
 
@@ -416,8 +404,7 @@ class AprilTagWaypointController(Node):
         if T_camera_tag is None:
             if now - self.last_no_tag_log_time >= 1.0:
                 self.get_logger().info(
-                    'Still stopped; waiting for a new AprilTag observation '
-                    'captured after the previous movement.'
+                    'Still stopped; waiting for a new AprilTag observation.'
                 )
                 self.last_no_tag_log_time = now
             return
@@ -429,7 +416,6 @@ class AprilTagWaypointController(Node):
         robot_y = float(T_world_robot[1, 3])
         robot_yaw = rotation_matrix_to_yaw(T_world_robot[:3, :3])
 
-        # Publish the pose estimate for visualization/logging.
         pose_msg = PoseStamped()
         pose_msg.header.stamp = self.get_clock().now().to_msg()
         pose_msg.header.frame_id = f'{self.world_frame}|{tag_frame}'
@@ -440,7 +426,7 @@ class AprilTagWaypointController(Node):
         pose_msg.pose.orientation.w = math.cos(robot_yaw / 2.0)
         self.pose_pub.publish(pose_msg)
 
-        cmd, action, dx, dy, heading_error, distance_error = (
+        cmd, action, dx, dy, heading_error, distance_error, move_duration = (
             self.calculate_motion_command(robot_x, robot_y, robot_yaw)
         )
 
@@ -448,9 +434,8 @@ class AprilTagWaypointController(Node):
             f'LOCALIZED tag={tag_frame} '
             f'pose=({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}) '
             f'waypoint={self.current_waypoint_idx} '
-            f'error_xy=({dx:.3f}, {dy:.3f}) '
             f'heading_error={heading_error:.3f} '
-            f'distance={distance_error:.3f}'
+            f'calc_duration={move_duration:.3f}s'
         )
 
         if action == 'reached':
@@ -467,14 +452,13 @@ class AprilTagWaypointController(Node):
                 self.get_logger().info('All waypoints reached.')
                 return
 
-            # Require a new observation before planning for the next waypoint.
             self.begin_observation_phase(
                 now, require_new_after_stop=True
             )
             return
 
         self.start_movement(
-            cmd, tag_frame, tag_stamp, now, action
+            cmd, tag_frame, tag_stamp, now, action, move_duration
         )
 
 
@@ -494,3 +478,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+    
