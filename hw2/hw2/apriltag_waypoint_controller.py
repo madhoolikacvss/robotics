@@ -3,12 +3,11 @@
 Stop-and-go AprilTag waypoint controller for a differential-drive ROS 2 robot.
 
 Control cycle:
-  1. Stop and wait up to the observation timeout for a new AprilTag observation.
-  2. Wait for a NEW AprilTag TF observation captured after the previous move.
-  3. Estimate the robot pose from the known tag pose and camera extrinsics.
-  4. Calculate one velocity command and its required movement duration (both linear & angular).
-  5. Execute that command for the precise movement duration.
-  6. Stop, wait, and localize again.
+  1. Stop and collect three new AprilTag TF observations after the previous move.
+  2. Estimate the robot pose from each observation and use the median pose.
+  3. Calculate one velocity command and its required movement duration.
+  4. Execute that command for the precise movement duration.
+  5. Stop, collect three observations, and localize again.
 """
 
 import csv
@@ -91,6 +90,25 @@ def rotation_matrix_to_yaw(rotation) -> float:
     return math.atan2(rotation[1, 0], rotation[0, 0])
 
 
+def median_pose(
+    readings: list[tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    """Return coordinate medians and the circular median yaw for three poses."""
+    if len(readings) != 3:
+        raise ValueError(f'Expected 3 pose readings, got {len(readings)}.')
+
+    x = float(np.median([reading[0] for reading in readings]))
+    y = float(np.median([reading[1] for reading in readings]))
+    yaws = [reading[2] for reading in readings]
+    yaw = min(
+        yaws,
+        key=lambda candidate: sum(
+            abs(wrap_angle(candidate - other)) for other in yaws
+        ),
+    )
+    return x, y, wrap_angle(yaw)
+
+
 class AprilTagWaypointController(Node):
     def __init__(self):
         super().__init__('apriltag_waypoint_controller')
@@ -148,6 +166,7 @@ class AprilTagWaypointController(Node):
 
         # Maximum time to wait for a post-stop image before searching for a tag.
         self.observation_timeout = 4.0
+        self.tag_readings_required = 3
 
         self.tag_max_age = 5.0
         self.no_tag_search_angle = math.radians(20.0)
@@ -174,6 +193,9 @@ class AprilTagWaypointController(Node):
         self.active_command = Twist()
         self.current_move_duration = self.move_duration
         self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
+        self.observation_samples: list[
+            tuple[str, float, tuple[float, float, float]]
+        ] = []
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
 
 
@@ -543,10 +565,11 @@ class AprilTagWaypointController(Node):
         
         
     def begin_observation_phase(self, now: float, require_new_after_stop: bool):
-        """Stop and wait up to the timeout for a post-stop tag observation."""
+        """Stop and collect fresh tag observations before the next movement."""
         self.phase = 'observe'
         self.phase_started_at = now
         self.observe_ready_at = now + self.observation_timeout
+        self.observation_samples.clear()
 
         if require_new_after_stop:
             self.require_stamp_after = now
@@ -577,6 +600,7 @@ class AprilTagWaypointController(Node):
 
     def start_tag_search_turn(self, now: float):
         """Turn left briefly when no tag is visible, then resume observing."""
+        self.observation_samples.clear()
         cmd = Twist()
         cmd.angular.z = self.k_omega
         self.active_command = cmd
@@ -622,18 +646,39 @@ class AprilTagWaypointController(Node):
 
         tag_frame, T_camera_tag, tag_stamp = self.get_new_known_tag()
 
-        if T_camera_tag is None:
+        if T_camera_tag is not None:
+            T_world_robot = self.estimate_world_robot_pose(
+                tag_frame, T_camera_tag
+            )
+            reading = (
+                float(T_world_robot[0, 3]),
+                float(T_world_robot[1, 3]),
+                rotation_matrix_to_yaw(T_world_robot[:3, :3]),
+            )
+            if not any(
+                sample_stamp == tag_stamp
+                for _, sample_stamp, _ in self.observation_samples
+            ):
+                self.observation_samples.append(
+                    (tag_frame, tag_stamp, reading)
+                )
+            self.last_used_tag_stamp[tag_frame] = tag_stamp
+
+        if len(self.observation_samples) < self.tag_readings_required:
             if now < self.observe_ready_at:
                 return
+            self.get_logger().warning(
+                f'Only collected {len(self.observation_samples)} of '
+                f'{self.tag_readings_required} AprilTag readings before '
+                'the observation timeout.'
+            )
             self.start_tag_search_turn(now)
             return
 
-        T_world_robot = self.estimate_world_robot_pose(
-            tag_frame, T_camera_tag
-        )
-        robot_x = float(T_world_robot[0, 3])
-        robot_y = float(T_world_robot[1, 3])
-        robot_yaw = rotation_matrix_to_yaw(T_world_robot[:3, :3])
+        tag_frame, tag_stamp, _ = self.observation_samples[-1]
+        robot_x, robot_y, robot_yaw = median_pose([
+            sample[2] for sample in self.observation_samples
+        ])
         self.latest_estimated_position = (robot_x, robot_y, robot_yaw)
 
         pose_msg = PoseStamped()
@@ -653,6 +698,7 @@ class AprilTagWaypointController(Node):
         self.get_logger().info(
             f'LOCALIZED tag={tag_frame} '
             f'pose=({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}) '
+            f'readings={self.tag_readings_required} (median) '
             f'waypoint={self.current_waypoint_idx} '
             f'distance_err={distance_error:.3f} '
             f'calc_duration={move_duration:.3f}s'
