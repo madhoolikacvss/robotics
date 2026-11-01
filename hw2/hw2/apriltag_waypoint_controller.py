@@ -8,6 +8,7 @@ from typing import Optional
 
 import numpy as np
 import rclpy
+import tf_transformations
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
@@ -21,26 +22,14 @@ def wrap_angle(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
-def quaternion_to_rotation_matrix(x: float, y: float, z: float, w: float):
-    """Convert a ROS quaternion (x, y, z, w) to a 3x3 rotation matrix."""
-    norm = math.sqrt(x * x + y * y + z * z + w * w)
-    if norm < 1e-12:
-        return np.eye(3)
-
-    x, y, z, w = x / norm, y / norm, z / norm, w / norm
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-    ], dtype=float)
-
-
 def transform_to_matrix(transform_stamped):
     """Convert a TransformStamped into a 4x4 homogeneous transform matrix."""
     t = transform_stamped.transform.translation
     q = transform_stamped.transform.rotation
     matrix = np.eye(4)
-    matrix[:3, :3] = quaternion_to_rotation_matrix(q.x, q.y, q.z, q.w)
+    matrix[:3, :3] = tf_transformations.quaternion_matrix(
+        [q.x, q.y, q.z, q.w]
+    )[:3, :3]
     matrix[:3, 3] = [t.x, t.y, t.z]
     return matrix
 
@@ -50,18 +39,9 @@ def pose_matrix_xyz_rpy(
     roll: float, pitch: float, yaw: float
 ):
     """Build a 4x4 pose matrix using R = Rz(yaw) @ Ry(pitch) @ Rx(roll)."""
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-
-    rotation = np.array([
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ], dtype=float)
-
-    matrix = np.eye(4)
-    matrix[:3, :3] = rotation
+    matrix = tf_transformations.euler_matrix(
+        roll, pitch, yaw, axes='sxyz'
+    )
     matrix[:3, 3] = [x, y, z]
     return matrix
 
@@ -99,9 +79,9 @@ class AprilTagWaypointController(Node):
             'tag_0': (1.75, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
             'tag_1': (1.0, 2.3, 0.05, math.pi / 2, 0.0, 0.0),
             'tag_2': (0.0, -0.35, 0.05, math.pi / 2, 0.0, math.pi),
-            # 'tag_2': (-0.2, 0.0, 0.05, math.pi / 2, 0.0, math.pi / 2),
             'tag_3': (0.3, 1.41 , 0.05, math.pi / 2, 0.0, math.pi / 2),
             'tag_4': (0.38, 2.0 , 0.05, math.pi / 2, 0.0, math.pi/2),
+            'tag_5': (1.75, 0.56, 0.05, math.pi / 2, 0.0, -math.pi / 2),
         }
 
         # ---------------------------------------------------------------
@@ -134,10 +114,13 @@ class AprilTagWaypointController(Node):
         self.control_period = 0.02
 
         self.tag_max_age = 0.60
-        self.position_outlier_threshold = 0.30
+        self.tag_sync_tolerance = 0.10
+        self.position_outlier_threshold = 1.00
+        self.tag_search_timeout = 5.0
+        self.tag_search_angle = math.radians(20.0)
 
         self.position_tolerance = 0.08
-        self.heading_tolerance = 0.13
+        self.heading_tolerance = 0.10
 
         # ---------------------------------------------------------------
         # 6. STATE
@@ -161,6 +144,9 @@ class AprilTagWaypointController(Node):
         self.fine_turn_pulse_duration = 0.05
         self.fine_turn_pause_duration = 0.20
         self.stale_stop_logged = False
+        self.last_tag_detected_time = self._now_seconds()
+        self.search_turn_until: Optional[float] = None
+        self.next_search_turn_time: Optional[float] = None
         self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
 
@@ -337,10 +323,10 @@ class AprilTagWaypointController(Node):
 
         self.cmd_pub.publish(output)
 
-    def get_new_known_tag(self):
-        """Return a new, recent observation for a known tag, if available."""
+    def get_new_known_tags(self):
+        """Return new, recent observations close in time for known tags."""
         now_seconds = self._now_seconds()
-        newest_observation = None
+        observations = []
 
         for tag_frame in self.tag_poses_world:
             try:
@@ -365,17 +351,24 @@ class AprilTagWaypointController(Node):
             if stamp_seconds <= self.last_used_tag_stamp[tag_frame]:
                 continue
 
-            if (
-                newest_observation is None
-                or stamp_seconds > newest_observation[2]
-            ):
-                newest_observation = (
-                    tag_frame, transform_to_matrix(tf_msg), stamp_seconds
-                )
+            observations.append(
+                (tag_frame, transform_to_matrix(tf_msg), stamp_seconds)
+            )
 
-        if newest_observation is not None:
-            tag_frame, _, stamp_seconds = newest_observation
-            age = now_seconds - stamp_seconds
+        if observations:
+            newest_stamp = max(observation[2] for observation in observations)
+            synchronized_observations = []
+            for observation in observations:
+                tag_frame, _, stamp_seconds = observation
+                if newest_stamp - stamp_seconds <= self.tag_sync_tolerance:
+                    synchronized_observations.append(observation)
+                else:
+                    self.last_used_tag_stamp[tag_frame] = stamp_seconds
+
+            tag_frames = ','.join(
+                observation[0] for observation in synchronized_observations
+            )
+            age = now_seconds - newest_stamp
             if (
                 self.last_tag_age_log_time is None
                 or now_seconds - self.last_tag_age_log_time >= 1.0
@@ -383,12 +376,31 @@ class AprilTagWaypointController(Node):
             ):
                 self.get_logger().info(
                     f'AprilTag image age: {age:.3f}s '
-                    f'(image stamp={stamp_seconds:.6f}, '
-                    f'current ROS time={now_seconds:.6f}, tag={tag_frame}).'
+                    f'(image stamp={newest_stamp:.6f}, '
+                    f'current ROS time={now_seconds:.6f}, '
+                    f'tags={tag_frames}).'
                 )
                 self.last_tag_age_log_time = now_seconds
 
-        return newest_observation or (None, None, None)
+            return synchronized_observations
+
+        return []
+
+    def average_world_robot_poses(self, poses):
+        """Average planar robot poses, including wrap-safe heading."""
+        averaged_pose = np.eye(4)
+        averaged_pose[:3, 3] = np.mean(
+            [pose[:3, 3] for pose in poses], axis=0
+        )
+        yaws = [rotation_matrix_to_yaw(pose[:3, :3]) for pose in poses]
+        averaged_yaw = math.atan2(
+            float(np.mean(np.sin(yaws))),
+            float(np.mean(np.cos(yaws))),
+        )
+        averaged_pose[:3, :3] = pose_matrix_xyz_rpy(
+            0.0, 0.0, 0.0, 0.0, 0.0, averaged_yaw
+        )[:3, :3]
+        return averaged_pose
 
     def estimate_world_robot_pose(self, tag_frame: str, T_camera_tag):
         """Estimate T_world_base from known tag pose and observed camera-to-tag transform."""
@@ -478,8 +490,42 @@ class AprilTagWaypointController(Node):
             self.publish_stop()
             return
 
-        tag_frame, T_camera_tag, tag_stamp = self.get_new_known_tag()
-        if T_camera_tag is None:
+        observations = self.get_new_known_tags()
+        if not observations:
+            if self.search_turn_until is not None:
+                if now < self.search_turn_until:
+                    command = Twist()
+                    command.angular.z = -self.k_omega
+                    self.cmd_pub.publish(command)
+                else:
+                    self.search_turn_until = None
+                    self.next_search_turn_time = (
+                        now + self.tag_search_timeout
+                    )
+                    self.publish_stop()
+                return
+
+            if (
+                now - self.last_tag_detected_time >= self.tag_search_timeout
+                and (
+                    self.next_search_turn_time is None
+                    or now >= self.next_search_turn_time
+                )
+            ):
+                self.search_turn_until = now + (
+                    self.tag_search_angle / self.k_omega
+                )
+                command = Twist()
+                command.angular.z = -self.k_omega
+                self.cmd_pub.publish(command)
+                self.get_logger().warning(
+                    'No AprilTag detected for '
+                    f'{self.tag_search_timeout:.1f}s; turning right '
+                    f'{math.degrees(self.tag_search_angle):.0f} degrees '
+                    'to search.'
+                )
+                return
+
             if (
                 self.waypoint_phase == 'heading'
                 and self.turn_mode in ('coarse', 'fine_pulse')
@@ -509,11 +555,20 @@ class AprilTagWaypointController(Node):
                 self.stale_stop_logged = True
             return
 
-        self.last_used_tag_stamp[tag_frame] = tag_stamp
+        self.last_tag_detected_time = now
+        self.search_turn_until = None
+        self.next_search_turn_time = None
 
-        T_world_robot = self.estimate_world_robot_pose(
-            tag_frame, T_camera_tag
-        )
+        tag_frames = [observation[0] for observation in observations]
+        tag_label = ','.join(tag_frames)
+        tag_stamp = max(observation[2] for observation in observations)
+        for tag_frame, _, stamp_seconds in observations:
+            self.last_used_tag_stamp[tag_frame] = stamp_seconds
+
+        T_world_robot = self.average_world_robot_poses([
+            self.estimate_world_robot_pose(tag_frame, T_camera_tag)
+            for tag_frame, T_camera_tag, _ in observations
+        ])
         robot_x = float(T_world_robot[0, 3])
         robot_y = float(T_world_robot[1, 3])
         robot_yaw = rotation_matrix_to_yaw(T_world_robot[:3, :3])
@@ -530,7 +585,7 @@ class AprilTagWaypointController(Node):
                     or now < self.last_outlier_log_time
                 ):
                     self.get_logger().warning(
-                        f'Rejecting AprilTag pose from {tag_frame}: '
+                        f'Rejecting AprilTag pose from {tag_label}: '
                         f'position changed by {position_change:.3f}m '
                         f'(limit={self.position_outlier_threshold:.2f}m).'
                     )
@@ -543,7 +598,7 @@ class AprilTagWaypointController(Node):
 
         pose_msg = PoseStamped()
         pose_msg.header.stamp = self.get_clock().now().to_msg()
-        pose_msg.header.frame_id = f'{self.world_frame}|{tag_frame}'
+        pose_msg.header.frame_id = f'{self.world_frame}|{tag_label}'
         pose_msg.pose.position.x = robot_x
         pose_msg.pose.position.y = robot_y
         pose_msg.pose.position.z = 0.0
@@ -564,7 +619,7 @@ class AprilTagWaypointController(Node):
             or now < self.last_localization_log_time
         ):
             self.get_logger().info(
-                f'LOCALIZED tag={tag_frame} '
+                f'LOCALIZED tags={tag_label} '
                 f'pose=({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}) '
                 f'waypoint={self.current_waypoint_idx} '
                 f'distance_err={distance_error:.3f} '
