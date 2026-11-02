@@ -118,7 +118,7 @@ class AprilTagWaypointController(Node):
 
         self.tag_max_age = 0.60
         self.tag_sync_tolerance = 0.10
-        self.position_outlier_threshold = 10000.00
+        self.position_outlier_threshold = 10000.00 # This is disabled for now
         self.tag_search_timeout = 5.0
         self.tag_search_angle = math.radians(20.0)
 
