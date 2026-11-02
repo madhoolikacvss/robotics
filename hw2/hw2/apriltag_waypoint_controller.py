@@ -76,12 +76,15 @@ class AprilTagWaypointController(Node):
         # 2. KNOWN APRILTAG WORLD POSES
         # ---------------------------------------------------------------
         self.tag_poses_world = {
-            'tag_0': (1.75, 0.00, 0.05, math.pi / 2, 0.0, -math.pi / 2),
-            'tag_1': (1.0, 2.3, 0.05, math.pi / 2, 0.0, 0.0),
-            'tag_2': (0.0, -0.35, 0.05, math.pi / 2, 0.0, math.pi),
-            'tag_3': (0.3, 1.41 , 0.05, math.pi / 2, 0.0, math.pi / 2),
-            'tag_4': (0.38, 2.0 , 0.05, math.pi / 2, 0.0, math.pi/2),
-            'tag_5': (1.75, 0.56, 0.05, math.pi / 2, 0.0, -math.pi / 2),
+            'tag_0': (0.47, -0.74, 0.14, math.pi / 2, 0.0, math.pi),
+            'tag_1': (1.33, 0.12, 0.14, math.pi / 2, 0.0, -math.pi / 2),
+            'tag_2': (0.13, 2.24, 0.14, math.pi / 2, 0.0, 0.0),
+            'tag_3': (-0.23, 1.79, 0.14, math.pi / 2, 0.0, math.pi / 2),
+            'tag_4': (-0.23, 1.11, 0.155, math.pi / 2, 0.0, math.pi / 2),
+            'tag_5': (1.33, 1.07, 0.15, math.pi / 2, 0.0, -math.pi / 2),
+            # 'tag_6': (0.55, -0.67, 0.14, math.pi / 2, 0.0, math.pi),
+            'tag_7': (0.8, 2.24, 0.14, math.pi / 2, 0.0, 0.0),
+            'tag_8': (-0.13, -0.28, 0.15, math.pi / 2, 0.0, 2.67),
         }
 
         # ---------------------------------------------------------------
@@ -98,8 +101,8 @@ class AprilTagWaypointController(Node):
         # ---------------------------------------------------------------
         self.waypoints = np.array([
             [0.00, 0.00, 0],
-            [1.00, 0.00, 0],
-            [1.00, 2.00, math.pi],
+            [0.80, 0.00, 0],
+            [.80, 1.60, math.pi],
             [0.00, 0.00, 0.0],
         ], dtype=float)
 
@@ -115,7 +118,7 @@ class AprilTagWaypointController(Node):
 
         self.tag_max_age = 0.60
         self.tag_sync_tolerance = 0.10
-        self.position_outlier_threshold = 1.00
+        self.position_outlier_threshold = 10000.00
         self.tag_search_timeout = 5.0
         self.tag_search_angle = math.radians(20.0)
 
@@ -565,9 +568,15 @@ class AprilTagWaypointController(Node):
         for tag_frame, _, stamp_seconds in observations:
             self.last_used_tag_stamp[tag_frame] = stamp_seconds
 
-        T_world_robot = self.average_world_robot_poses([
-            self.estimate_world_robot_pose(tag_frame, T_camera_tag)
+        per_tag_poses = [
+            (
+                tag_frame,
+                self.estimate_world_robot_pose(tag_frame, T_camera_tag),
+            )
             for tag_frame, T_camera_tag, _ in observations
+        ]
+        T_world_robot = self.average_world_robot_poses([
+            pose for _, pose in per_tag_poses
         ])
         robot_x = float(T_world_robot[0, 3])
         robot_y = float(T_world_robot[1, 3])
@@ -618,9 +627,16 @@ class AprilTagWaypointController(Node):
             or now - self.last_localization_log_time >= 1.0
             or now < self.last_localization_log_time
         ):
+            per_tag_positions = ', '.join(
+                f'{tag_frame}=('
+                f'{pose[0, 3]:.3f}, {pose[1, 3]:.3f}, '
+                f'{rotation_matrix_to_yaw(pose[:3, :3]):.3f})'
+                for tag_frame, pose in per_tag_poses
+            )
             self.get_logger().info(
                 f'LOCALIZED tags={tag_label} '
                 f'pose=({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}) '
+                f'per_tag_poses=[{per_tag_positions}] '
                 f'waypoint={self.current_waypoint_idx} '
                 f'distance_err={distance_error:.3f} '
                 f'heading_err={heading_error:.3f} '
