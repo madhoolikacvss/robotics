@@ -122,8 +122,8 @@ class AprilTagWaypointController(Node):
         self.tag_search_timeout = 5.0
         self.tag_search_angle = math.radians(20.0)
 
-        self.position_tolerance = 0.07
-        self.heading_tolerance = 0.10
+        self.position_tolerance = 0.08
+        self.heading_tolerance = 0.11
 
         # ---------------------------------------------------------------
         # 6. STATE
@@ -202,7 +202,7 @@ class AprilTagWaypointController(Node):
             self.control_period, self.control_loop
         )
         self.position_log_timer = self.create_timer(
-            1.0, self.write_position_to_file
+            0.5, self.write_position_to_file
         )
 
         self.get_logger().info(
@@ -217,7 +217,7 @@ class AprilTagWaypointController(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def write_position_to_file(self):
-        """Append the latest estimated pose to the CSV log once per second."""
+        """Append the latest estimated pose to the CSV log every 0.5 seconds."""
         if self.latest_estimated_position is None:
             return
 
