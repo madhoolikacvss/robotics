@@ -78,12 +78,12 @@ class AprilTagWaypointController(Node):
         self.tag_poses_world = {
             'tag_0': (0.47, -0.74, 0.14, math.pi / 2, 0.0, math.pi),
             'tag_1': (1.33, 0.12, 0.14, math.pi / 2, 0.0, -math.pi / 2),
-            'tag_2': (0.13, 2.24, 0.14, math.pi / 2, 0.0, 0.0),
-            'tag_3': (-0.23, 1.79, 0.14, math.pi / 2, 0.0, math.pi / 2),
-            'tag_4': (-0.23, 1.11, 0.155, math.pi / 2, 0.0, math.pi / 2),
+            'tag_2': (0.09, 2.15, 0.14, math.pi / 2, 0.0, 0.0),
+            'tag_3': (-0.37, 1.51, 0.14, math.pi / 2, 0.0, math.pi / 2),
+            'tag_4': (-0.37, 0.54, 0.155, math.pi / 2, 0.0, math.pi / 2),
             'tag_5': (1.33, 1.07, 0.15, math.pi / 2, 0.0, -math.pi / 2),
             # 'tag_6': (0.55, -0.67, 0.14, math.pi / 2, 0.0, math.pi),
-            'tag_7': (0.8, 2.24, 0.14, math.pi / 2, 0.0, 0.0),
+            'tag_7': (0.75, 2.15, 0.14, math.pi / 2, 0.0, 0.0),
             'tag_8': (-0.13, -0.28, 0.15, math.pi / 2, 0.0, 2.67),
         }
 
@@ -122,7 +122,7 @@ class AprilTagWaypointController(Node):
         self.tag_search_timeout = 5.0
         self.tag_search_angle = math.radians(20.0)
 
-        self.position_tolerance = 0.08
+        self.position_tolerance = 0.07
         self.heading_tolerance = 0.10
 
         # ---------------------------------------------------------------
