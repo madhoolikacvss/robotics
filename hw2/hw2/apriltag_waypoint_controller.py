@@ -22,6 +22,20 @@ def wrap_angle(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def median_pose_estimate(samples: list[tuple[float, float, float]]):
+    """Return median x/y and the circular median yaw from pose samples."""
+    median_x = float(np.median([sample[0] for sample in samples]))
+    median_y = float(np.median([sample[1] for sample in samples]))
+    yaw_candidates = [sample[2] for sample in samples]
+    median_yaw = min(
+        yaw_candidates,
+        key=lambda candidate: sum(
+            abs(wrap_angle(yaw - candidate)) for yaw in yaw_candidates
+        ),
+    )
+    return median_x, median_y, median_yaw
+
+
 def transform_to_matrix(transform_stamped):
     """Convert a TransformStamped into a 4x4 homogeneous transform matrix."""
     t = transform_stamped.transform.translation
@@ -152,6 +166,7 @@ class AprilTagWaypointController(Node):
         self.next_search_turn_time: Optional[float] = None
         self.last_used_tag_stamp = {name: 0.0 for name in self.tag_poses_world}
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
+        self.startup_pose_samples: list[tuple[float, float, float]] = []
 
         # ---------------------------------------------------------------
         # 7. ROS COMMUNICATION
@@ -495,6 +510,16 @@ class AprilTagWaypointController(Node):
 
         observations = self.get_new_known_tags()
         if not observations:
+            if len(self.startup_pose_samples) < 3:
+                self.publish_stop()
+                if not self.stale_stop_logged:
+                    self.get_logger().warning(
+                        'Waiting for 3 fresh AprilTag localization samples '
+                        'before moving.'
+                    )
+                    self.stale_stop_logged = True
+                return
+
             if self.search_turn_until is not None:
                 if now < self.search_turn_until:
                     command = Twist()
@@ -600,6 +625,24 @@ class AprilTagWaypointController(Node):
                     )
                     self.last_outlier_log_time = now
                 return
+
+        if len(self.startup_pose_samples) < 3:
+            self.startup_pose_samples.append((robot_x, robot_y, robot_yaw))
+            if len(self.startup_pose_samples) < 3:
+                self.publish_stop()
+                self.get_logger().info(
+                    'Collecting startup localization samples: '
+                    f'{len(self.startup_pose_samples)}/3.'
+                )
+                return
+
+            robot_x, robot_y, robot_yaw = median_pose_estimate(
+                self.startup_pose_samples
+            )
+            self.get_logger().info(
+                'Startup pose median from 3 fresh samples: '
+                f'({robot_x:.3f}, {robot_y:.3f}, {robot_yaw:.3f}).'
+            )
 
         self.last_vision_stamp = tag_stamp
         self.stale_stop_logged = False
