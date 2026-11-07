@@ -11,6 +11,7 @@
 #include <image_transport/image_transport.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <rmw/qos_profiles.h>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -43,6 +44,13 @@ bool assign_check(const rclcpp::Parameter& parameter, const std::string& name, T
         return true;
     }
     return false;
+}
+
+rmw_qos_profile_t sensor_data_qos_depth_one()
+{
+    auto qos = rmw_qos_profile_sensor_data;
+    qos.depth = 1;
+    return qos;
 }
 
 rcl_interfaces::msg::ParameterDescriptor
@@ -103,7 +111,7 @@ AprilTagNode::AprilTagNode(const rclcpp::NodeOptions& options)
         this->get_node_topics_interface()->resolve_topic_name("image_rect"),
         std::bind(&AprilTagNode::onCamera, this, std::placeholders::_1, std::placeholders::_2),
         declare_parameter("image_transport", "raw", descr({}, true)),
-        rmw_qos_profile_sensor_data)),
+        sensor_data_qos_depth_one())),
     pub_detections(create_publisher<apriltag_msgs::msg::AprilTagDetectionArray>("detections", rclcpp::QoS(1))),
     tf_broadcaster(this)
 {

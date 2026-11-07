@@ -74,6 +74,8 @@ base_link → camera_optical_frame (constant, measured from mounting)
 
 **check:** Place the robot at a known position relative to a tag, run the node, and print the computed `(x, y, yaw)`. Compare with the ruler-measured truth. If it is off by a constant rotation (e.g., 90°), `T_base_cam` orientation is wrong.
 
+When multiple known tags have fresh observations within 0.10 s of the newest observation, the waypoint controller computes a robot pose from each tag and averages their positions. It averages heading with a circular mean, avoiding incorrect results when headings straddle `-pi` and `pi`. A lone visible tag continues to provide the pose by itself.
+
 Stuff added to HW solution:
 TF buffer/listener — added Buffer and TransformListener so the node can read apriltag_ros's TF output.
 
