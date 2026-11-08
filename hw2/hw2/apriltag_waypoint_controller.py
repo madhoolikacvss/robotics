@@ -92,7 +92,7 @@ class AprilTagWaypointController(Node):
         self.tag_poses_world = {
             'tag_0': (0.47, -0.74, 0.14, math.pi / 2, 0.0, math.pi),
             'tag_1': (1.33, 0.12, 0.14, math.pi / 2, 0.0, -math.pi / 2),
-            'tag_2': (0.09, 2.15, 0.14, math.pi / 2, 0.0, 0.0),
+            'tag_2': (0.14, 2.15, 0.14, math.pi / 2, 0.0, math.pi / 4),
             'tag_3': (-0.32, 1.51, 0.14, math.pi / 2, 0.0, math.pi / 2),
             'tag_4': (-0.32, 0.54, 0.155, math.pi / 2, 0.0, 2.67),
             'tag_5': (1.33, 1.07, 0.15, math.pi / 2, 0.0, -math.pi / 2),
