@@ -167,3 +167,21 @@ Your existing `hw1_solution.py` already has a three-stage controller (rotate to 
 6. Tune only if the robot oscillates or misses waypoints badly: adjust `alpha` in the low-pass filter, or increase tolerances slightly.
 
 The only thing that could derail this plan is an incorrect `T_base_cam` orientation. Test that first before touching the controller.
+
+### EKF localization without waypoint following
+
+`hw3/hw3/ekf_localizer.py` is a standalone ROS 2 node that estimates the
+robot's planar pose from `/cmd_vel` and fresh AprilTag TF positions. It uses
+the known tag map and camera mounting transform from the waypoint controller;
+tag orientation is not used. The EKF predicts from commanded linear/angular
+velocity and corrects against each visible tag position, rejecting
+measurements outside a Mahalanobis validation gate.
+
+After building and sourcing the ROS workspace, run `ros2 run hw3 ekf_localizer`.
+The node subscribes to `/cmd_vel` and publishes `PoseStamped` on
+`/robot_pose_estimate`. It does not publish velocity commands or follow
+waypoints. To run it without waypoint following, do not launch
+`apriltag_waypoint_controller` alongside it. The initial pose defaults to
+`(0, 0, 0)` in `odom`; adjust the `initial_x`, `initial_y`, and `initial_yaw`
+ROS parameters if the robot starts elsewhere. The default camera frame is
+`camera_frame` and can be changed with the `camera_frame` parameter.

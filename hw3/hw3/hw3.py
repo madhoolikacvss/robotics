@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Estimate the robot's planar pose from velocity commands and AprilTags."""
+
+import math
+from typing import Optional
+
+import numpy as np
+import rclpy
+import tf_transformations
+from geometry_msgs.msg import PoseStamped, Twist
+from rclpy.duration import Duration
+from rclpy.node import Node
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformException, TransformListener
+
+
+def wrap_angle(angle: float) -> float:
+    """Normalize an angle to [-pi, pi)."""
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+class PlanarRobotEKF:
+    """EKF for a unicycle robot observing known landmarks in its base frame."""
+
+    def __init__(
+        self,
+        initial_state: np.ndarray,
+        initial_covariance: np.ndarray,
+        control_noise: np.ndarray,
+        measurement_noise: np.ndarray,
+        gate_threshold: float,
+    ):
+        self.state = initial_state.astype(float)
+        self.covariance = initial_covariance.astype(float)
+        self.control_noise = control_noise
+        self.measurement_noise = measurement_noise
+        self.gate_threshold = gate_threshold
+
+    def predict(
+        self, linear_velocity: float, angular_velocity: float, dt: float
+    ):
+        """Propagate the pose and covariance using the commanded twist."""
+        if dt <= 0.0:
+            return
+
+        x, y, yaw = self.state
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+
+        self.state = np.array([
+            x + linear_velocity * cos_yaw * dt,
+            y + linear_velocity * sin_yaw * dt,
+            wrap_angle(yaw + angular_velocity * dt),
+        ])
+
+        state_jacobian = np.array([
+            [1.0, 0.0, -linear_velocity * sin_yaw * dt],
+            [0.0, 1.0, linear_velocity * cos_yaw * dt],
+            [0.0, 0.0, 1.0],
+        ])
+        control_jacobian = np.array([
+            [cos_yaw * dt, 0.0],
+            [sin_yaw * dt, 0.0],
+            [0.0, dt],
+        ])
+        self.covariance = (
+            state_jacobian @ self.covariance @ state_jacobian.T
+            + control_jacobian @ self.control_noise @ control_jacobian.T
+        )
+
+    def update(
+        self, landmark_world: np.ndarray, observed_tag_base: np.ndarray
+    ) -> Optional[float]:
+        """Correct the pose from one tag's measured base-frame position.
+
+        Return the squared Mahalanobis distance, or None when the observation
+        is outside the configured validation gate.
+        """
+        x, y, yaw = self.state
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+        dx = float(landmark_world[0] - x)
+        dy = float(landmark_world[1] - y)
+        predicted = np.array([
+            cos_yaw * dx + sin_yaw * dy,
+            -sin_yaw * dx + cos_yaw * dy,
+        ])
+        innovation = observed_tag_base - predicted
+        measurement_jacobian = np.array([
+            [-cos_yaw, -sin_yaw, -predicted[1]],
+            [sin_yaw, -cos_yaw, -predicted[0]],
+        ])
+        innovation_covariance = (
+            measurement_jacobian @ self.covariance
+            @ measurement_jacobian.T + self.measurement_noise
+        )
+        mahalanobis_squared = float(
+            innovation.T @ np.linalg.solve(innovation_covariance, innovation)
+        )
+        if mahalanobis_squared > self.gate_threshold:
+            return None
+
+        kalman_gain = np.linalg.solve(
+            innovation_covariance,
+            measurement_jacobian @ self.covariance,
+        ).T
+        self.state += kalman_gain @ innovation
+        self.state[2] = wrap_angle(float(self.state[2]))
+        self.covariance = (
+            np.eye(3) - kalman_gain @ measurement_jacobian
+        ) @ self.covariance
+        self.covariance = 0.5 * (self.covariance + self.covariance.T)
+        return mahalanobis_squared
+
+
+class AprilTagEKFLocalizer(Node):
+    """Fuse commanded velocity with position-only AprilTag observations."""
+
+    def __init__(self):
+        super().__init__('apriltag_ekf_localizer')
+
+        self.world_frame = str(
+            self.declare_parameter('world_frame', 'odom').value
+        )
+        self.camera_frame = str(
+            self.declare_parameter('camera_frame', 'camera_frame').value
+        )
+        self.tag_max_age = float(
+            self.declare_parameter('tag_max_age', 0.60).value
+        )
+        self.command_timeout = float(
+            self.declare_parameter('command_timeout', 0.50).value
+        )
+        initial_x = float(
+            self.declare_parameter('initial_x', 0.0).value
+        )
+        initial_y = float(
+            self.declare_parameter('initial_y', 0.0).value
+        )
+        initial_yaw = float(
+            self.declare_parameter('initial_yaw', 0.0).value
+        )
+        initial_position_std = float(
+            self.declare_parameter('initial_position_std', 1.0).value
+        )
+        initial_yaw_std = float(
+            self.declare_parameter('initial_yaw_std', math.pi).value
+        )
+        linear_velocity_std = float(
+            self.declare_parameter('linear_velocity_std', 0.05).value
+        )
+        angular_velocity_std = float(
+            self.declare_parameter('angular_velocity_std', 0.10).value
+        )
+        tag_position_std = float(
+            self.declare_parameter('tag_position_std', 0.08).value
+        )
+        self.gate_threshold = float(
+            self.declare_parameter('mahalanobis_gate', 9.21).value
+        )
+        positive_parameters = (
+            self.tag_max_age, self.command_timeout, initial_position_std,
+            initial_yaw_std, linear_velocity_std, angular_velocity_std,
+            tag_position_std, self.gate_threshold,
+        )
+        if any(value <= 0.0 for value in positive_parameters):
+            raise ValueError('EKF noise, age, timeout, and gate parameters '
+                             'must be positive.')
+
+        self.ekf = PlanarRobotEKF(
+            initial_state=np.array([
+                initial_x, initial_y, wrap_angle(initial_yaw),
+            ]),
+            initial_covariance=np.diag([
+                initial_position_std ** 2,
+                initial_position_std ** 2,
+                initial_yaw_std ** 2,
+            ]),
+            control_noise=np.diag([
+                linear_velocity_std ** 2,
+                angular_velocity_std ** 2,
+            ]),
+            measurement_noise=np.eye(2) * tag_position_std ** 2,
+            gate_threshold=self.gate_threshold,
+        )
+
+        self.tag_positions_world = {
+            'tag_0': (0.47, -0.74),
+            'tag_1': (1.33, 0.12),
+            'tag_2': (0.09, 2.15),
+            'tag_3': (-0.37, 1.51),
+            'tag_4': (-0.37, 0.54),
+            'tag_5': (1.33, 1.07),
+            'tag_7': (0.75, 2.15),
+            'tag_8': (-0.13, -0.28),
+        }
+
+        camera_xyz = np.array([0.07, 0.0, 0.12])
+        camera_rpy = (-math.pi / 2.0, 0.0, -math.pi / 2.0)
+        self.rotation_base_camera = tf_transformations.euler_matrix(
+            *camera_rpy, axes='sxyz'
+        )[:3, :3]
+        self.translation_base_camera = camera_xyz
+
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+        self.last_command_time: Optional[float] = None
+        now = self._now_seconds()
+        self.last_prediction_time = now
+        self.last_used_tag_stamp = {
+            tag_frame: 0.0 for tag_frame in self.tag_positions_world
+        }
+        self.last_log_time: Optional[float] = None
+
+        self.pose_publisher = self.create_publisher(
+            PoseStamped, '/robot_pose_estimate', 10
+        )
+        self.create_subscription(
+            Twist, '/cmd_vel', self.command_callback, 10
+        )
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.timer = self.create_timer(0.02, self.filter_step)
+
+        self.get_logger().info(
+            'AprilTag EKF localizer started; subscribes to /cmd_vel and '
+            'publishes /robot_pose_estimate.'
+        )
+
+    def _now_seconds(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def command_callback(self, msg: Twist):
+        """Store the most recently commanded planar velocity."""
+        self.linear_velocity = float(msg.linear.x)
+        self.angular_velocity = float(msg.angular.z)
+        self.last_command_time = self._now_seconds()
+
+    def _predict(self, now: float):
+        """Advance the filter to the current time."""
+        dt = now - self.last_prediction_time
+        if dt < 0.0:
+            self.get_logger().warning(
+                'ROS time moved backwards; resetting the EKF time baseline.'
+            )
+            self.last_prediction_time = now
+            self.last_command_time = None
+            self.linear_velocity = 0.0
+            self.angular_velocity = 0.0
+            self.last_used_tag_stamp = {
+                tag_frame: 0.0 for tag_frame in self.tag_positions_world
+            }
+            return
+        if dt == 0.0:
+            return
+
+        command_is_fresh = (
+            self.last_command_time is not None
+            and now - self.last_command_time <= self.command_timeout
+        )
+        linear_velocity = self.linear_velocity if command_is_fresh else 0.0
+        angular_velocity = self.angular_velocity if command_is_fresh else 0.0
+        self.ekf.predict(linear_velocity, angular_velocity, dt)
+        self.last_prediction_time = now
+
+    def _observe_visible_tags(self, now: float) -> list[str]:
+        """Apply each new, recent known tag position measurement."""
+        accepted_tags = []
+        for tag_frame, landmark_xy in self.tag_positions_world.items():
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    self.camera_frame,
+                    tag_frame,
+                    Time(),
+                    timeout=Duration(seconds=0.0),
+                )
+            except TransformException:
+                continue
+
+            stamp = transform.header.stamp
+            stamp_seconds = stamp.sec + stamp.nanosec * 1e-9
+            age = now - stamp_seconds
+            if (
+                stamp_seconds <= self.last_used_tag_stamp[tag_frame]
+                or stamp_seconds <= 0.0
+                or age < -0.10
+                or age > self.tag_max_age
+            ):
+                continue
+
+            self.last_used_tag_stamp[tag_frame] = stamp_seconds
+            translation = transform.transform.translation
+            camera_to_tag = np.array([
+                translation.x, translation.y, translation.z,
+            ])
+            tag_position_base = (
+                self.translation_base_camera
+                + self.rotation_base_camera @ camera_to_tag
+            )
+            mahalanobis_squared = self.ekf.update(
+                np.asarray(landmark_xy),
+                tag_position_base[:2],
+            )
+            if mahalanobis_squared is None:
+                self.get_logger().warning(
+                    f'Rejected {tag_frame} position measurement: '
+                    'outside the Mahalanobis validation gate.'
+                )
+                continue
+            accepted_tags.append(tag_frame)
+
+        return accepted_tags
+
+    def _publish_pose(self, now: float, accepted_tags: list[str]):
+        """Publish the current EKF pose in the configured world frame."""
+        x, y, yaw = self.ekf.state
+        pose = PoseStamped()
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.header.frame_id = self.world_frame
+        pose.pose.position.x = float(x)
+        pose.pose.position.y = float(y)
+        pose.pose.position.z = 0.0
+        pose.pose.orientation.z = math.sin(yaw / 2.0)
+        pose.pose.orientation.w = math.cos(yaw / 2.0)
+        self.pose_publisher.publish(pose)
+
+        if (
+            self.last_log_time is None
+            or now - self.last_log_time >= 1.0
+            or now < self.last_log_time
+        ):
+            self.get_logger().info(
+                f'EKF pose=({x:.3f}, {y:.3f}, {yaw:.3f}), '
+                f'command=(v={self.linear_velocity:.3f}, '
+                f'w={self.angular_velocity:.3f}), '
+                f'position_std=({math.sqrt(self.ekf.covariance[0, 0]):.3f}, '
+                f'{math.sqrt(self.ekf.covariance[1, 1]):.3f}), '
+                f'tags={",".join(accepted_tags) or "none"}'
+            )
+            self.last_log_time = now
+
+    def filter_step(self):
+        """Run one prediction, measurement-update, and publication cycle."""
+        now = self._now_seconds()
+        self._predict(now)
+        accepted_tags = self._observe_visible_tags(now)
+        self._publish_pose(now, accepted_tags)
+
+
+def main(args=None):
+    """Run the standalone AprilTag EKF localization node."""
+    rclpy.init(args=args)
+    node = AprilTagEKFLocalizer()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
