@@ -117,7 +117,7 @@ class AprilTagEKFLocalizer(Node):
     """Fuse commanded velocity with position-only AprilTag observations."""
 
     def __init__(self):
-        super().__init__('apriltag_ekf_localizer')
+        super().__init__('ekf_localizer')
 
         self.world_frame = str(
             self.declare_parameter('world_frame', 'odom').value

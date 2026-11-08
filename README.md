@@ -181,7 +181,7 @@ After building and sourcing the ROS workspace, run `ros2 run hw3 ekf_localizer`.
 The node subscribes to `/cmd_vel` and publishes `PoseStamped` on
 `/robot_pose_estimate`. It does not publish velocity commands or follow
 waypoints. To run it without waypoint following, do not launch
-`apriltag_waypoint_controller` alongside it. The initial pose defaults to
+`ekf_waypoint_controller` alongside it. The initial pose defaults to
 `(0, 0, 0)` in `odom`; adjust the `initial_x`, `initial_y`, and `initial_yaw`
 ROS parameters if the robot starts elsewhere. The default camera frame is
 `camera_frame` and can be changed with the `camera_frame` parameter.

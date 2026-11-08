@@ -5,10 +5,11 @@ from launch_ros.actions import Node
 def generate_launch_description():
     """
     Launch file for the hw3 package.
-    Starts three nodes:
+    Starts four nodes:
     1. motor_control - communicates with robot hardware via serial
     2. velocity_mapping - converts Twist commands to motor commands
-    3. hw3 - AprilTag EKF localization
+    3. ekf_localizer - AprilTag EKF localization
+    4. ekf_waypoint_controller - follows waypoints using the EKF pose
     """
 
     # Node 1: Motor Controller (communicates with robot hardware)
@@ -30,10 +31,18 @@ def generate_launch_description():
     )
 
     # Node 3: AprilTag EKF Localization
-    hw3 = Node(
+    ekf_localizer = Node(
         package='hw3',
-        executable='hw3',
-        name='apriltag_ekf_localizer',
+        executable='ekf_localizer',
+        name='ekf_localizer',
+        output='screen',
+        emulate_tty=True,
+    )
+
+    waypoint_controller = Node(
+        package='hw3',
+        executable='ekf_waypoint_controller',
+        name='ekf_waypoint_controller',
         output='screen',
         emulate_tty=True,
     )
@@ -41,5 +50,6 @@ def generate_launch_description():
     return LaunchDescription([
         motor_controller,
         velocity_mapping,
-        hw3,
+        ekf_localizer,
+        waypoint_controller,
     ])

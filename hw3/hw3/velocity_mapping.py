@@ -5,6 +5,9 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32MultiArray
 import numpy as np
 
+K_V = 0.12
+K_OMEGA = 0.35
+
 
 class VelocityToMotorNode(Node):
     def __init__(self):
@@ -43,8 +46,12 @@ class VelocityToMotorNode(Node):
         return float(np.copysign(magnitude, command))
 
     def cmd_vel_callback(self, msg: Twist):
-        lin = float(msg.linear.x)
-        ang = float(msg.angular.z)
+        lin = float(np.clip(
+            msg.linear.x, -K_V, K_V
+        ))
+        ang = float(np.clip(
+            msg.angular.z, -K_OMEGA, K_OMEGA
+        ))
         
         
         v_left, v_right = self._wheel_velocities(lin, ang)
