@@ -4,22 +4,46 @@ import math
 
 from .velocity_mapping import K_OMEGA, K_V
 
+# # Square
+# WAYPOINTS = (
+#     (0.00, 0.00, 0.0),
+#     (1.000, 0.00, math.pi / 2),
+#     (1.00, 1.00, math.pi),
+#     (0.00, 1.00, -math.pi/2),
+#     (0.00, 0.00, 0.0),
+# )
+
+# Repeated Square
 WAYPOINTS = (
     (0.00, 0.00, 0.0),
-    # (0.00, 0.00, math.pi/2),
-
-    (1.00, 0.00, 0.00),
-    (1.00, 1.00, math.pi/2),
-    (0.00, 1.00, math.pi),
-    (0.00, 0.00, 0.00),
-    # (1.0, 0.00, 0.0),
-    # (0.80, 1.60, math.pi),
-    # (0.00, 0.00, 0.0),
+    (1.000, 0.00, math.pi / 2),
+    (1.00, 1.00, math.pi),
+    (0.00, 1.00, -math.pi/2),
+    (0.00, 0.00, 0.0),
+    (1.000, 0.00, math.pi / 2),
+    (1.00, 1.00, math.pi),
+    (0.00, 1.00, -math.pi/2),
+    (0.00, 0.00, 0.0),
 )
+
+
+# # Octogon
+# WAYPOINTS = (
+#     (0.00, 0.00, 0.0),
+#     (0.292893, 0.000000, 0.0),
+#     (0.707107, 0.000000, 0.0),
+#     (1.000000, 0.292893, math.pi / 4),
+#     (1.000000, 0.707107, math.pi / 2),
+#     (0.707107, 1.000000, 3 * math.pi / 4),
+#     (0.292893, 1.000000, math.pi),
+#     (0.000000, 0.707107, -3 * math.pi / 4),
+#     (0.000000, 0.292893, -math.pi / 2),
+#     (0.292893, 0.000000, -math.pi / 4),
+# )
 
 CONTROL_PERIOD = 0.01
 K_DISTANCE = 0.8
-POSITION_TOLERANCE = 0.04
+POSITION_TOLERANCE = 0.08
 HEADING_TOLERANCE = 0.11
 # Direction-specific measured turn rates at the controller's K_OMEGA.
 # Low battery constants
@@ -35,7 +59,7 @@ HEADING_TOLERANCE = 0.11
 # ANGULAR_ANGLE_OFFSET_CW = -0.56
 
 # Testing
-ANGULAR_RATE_CCW = 2.65 # 2.07
+ANGULAR_RATE_CCW = 3.25 # 2.07
 ANGULAR_RATE_CW = 3.4 #2.16
 ANGULAR_ANGLE_OFFSET_CCW = -0.22 # -0.59
 ANGULAR_ANGLE_OFFSET_CW = -0.3
