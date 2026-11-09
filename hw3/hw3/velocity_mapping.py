@@ -5,9 +5,9 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32MultiArray
 import numpy as np
 
-K_V = 0.22
+K_V = 0.12
 K_OMEGA = 0.3
-MIN_FORWARD_VELOCITY = 0.22
+# MIN_FORWARD_VELOCITY = 0.22
 
 
 class VelocityToMotorNode(Node):
@@ -16,9 +16,9 @@ class VelocityToMotorNode(Node):
         self.wheel_base = 0.127  # [m]
 
         self.cmd_max = 1.5
-        self.left_linear_deadzone = 0.02 # 0.09
+        self.left_linear_deadzone = 0.09
         self.left_linear_slope = 1.59
-        self.right_linear_deadzone = 0.022 # 0.05
+        self.right_linear_deadzone = 0.06
         self.right_linear_slope = 1.59
         
         self.left_angular_deadzone = 0.475/2
@@ -54,8 +54,8 @@ class VelocityToMotorNode(Node):
             msg.angular.z, -K_OMEGA, K_OMEGA
         ))
 
-        if lin > 0.0 and ang == 0.0:
-            lin = max(lin, MIN_FORWARD_VELOCITY)
+        # if lin > 0.0 and ang == 0.0:
+        #     lin = max(lin, MIN_FORWARD_VELOCITY)
         
         v_left, v_right = self._wheel_velocities(lin, ang)
         if lin != 0.0:

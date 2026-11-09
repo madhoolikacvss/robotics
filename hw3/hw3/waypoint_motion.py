@@ -13,18 +13,23 @@ from .velocity_mapping import K_OMEGA, K_V
 #     (0.00, 0.00, 0.0),
 # )
 
-# Repeated Square
 WAYPOINTS = (
-    (0.00, 0.00, 0.0),
-    (1.000, 0.00, math.pi / 2),
-    (1.00, 1.00, math.pi),
-    (0.00, 1.00, -math.pi/2),
-    (0.00, 0.00, 0.0),
-    (1.000, 0.00, math.pi / 2),
-    (1.00, 1.00, math.pi),
-    (0.00, 1.00, -math.pi/2),
-    (0.00, 0.00, 0.0),
+    (0.0, 0.0, 0.0),
+    (0.0, 0.0, math.pi / 8),  # Turn left 22.5°
+    (0.0, 0.0, 0.0),         # Turn right back to start
 )
+# Repeated Square
+# WAYPOINTS = (
+#     (0.00, 0.00, 0.0),
+#     (1.000, 0.00, math.pi / 2),
+#     (1.00, 1.00, math.pi),
+#     (0.00, 1.00, -math.pi/2),
+#     (0.00, 0.00, 0.0),
+#     (1.000, 0.00, math.pi / 2),
+#     (1.00, 1.00, math.pi),
+#     (0.00, 1.00, -math.pi/2),
+#     (0.00, 0.00, 0.0),
+# )
 
 
 # # Octogon
