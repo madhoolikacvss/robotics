@@ -15,7 +15,7 @@ from .velocity_mapping import K_OMEGA, K_V
 
 WAYPOINTS = (
     (0.0, 0.0, 0.0),
-    (0.0, 0.0, math.pi / 8),  # Turn left 22.5°
+    (0.0, 0.0, math.pi/2),  # Turn left 22.5°
     (0.0, 0.0, 0.0),         # Turn right back to start
 )
 # Repeated Square
