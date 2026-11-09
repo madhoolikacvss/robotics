@@ -35,11 +35,21 @@ class EKFWaypointController(Node):
         )
         if self.pose_timeout <= 0.0:
             raise ValueError('pose_timeout must be positive.')
+        self.final_waypoint_settle_time = float(
+            self.declare_parameter(
+                'final_waypoint_settle_time', 1.0
+            ).value
+        )
+        if self.final_waypoint_settle_time < 0.0:
+            raise ValueError(
+                'final_waypoint_settle_time must be non-negative.'
+            )
 
         self.control_period = CONTROL_PERIOD
         self.last_control_log_time: Optional[float] = None
         self.desired_command = Twist()
         self.stale_stop_logged = False
+        self.final_waypoint_wait_started: Optional[float] = None
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
         self.last_pose_received_time: Optional[float] = None
         self.frame_mismatch_logged = False
@@ -304,6 +314,15 @@ class EKFWaypointController(Node):
                 self.stale_stop_logged = True
             return
 
+        if self.final_waypoint_wait_started is not None:
+            if (
+                now - self.final_waypoint_wait_started
+                < self.final_waypoint_settle_time
+            ):
+                self.publish_stop()
+                return
+            self.final_waypoint_wait_started = None
+
         self.stale_stop_logged = False
         robot_x, robot_y, robot_yaw = self.latest_estimated_position
 
@@ -343,6 +362,20 @@ class EKFWaypointController(Node):
             self.last_control_log_time = now
 
         if action == 'reached':
+            if (
+                self.motion.current_waypoint_idx
+                == len(self.motion.waypoints) - 1
+                and self.final_waypoint_wait_started is None
+            ):
+                self.final_waypoint_wait_started = now
+                self.publish_stop()
+                self.get_logger().info(
+                    'Final waypoint reached; holding position for '
+                    f'{self.final_waypoint_settle_time:.1f}s to allow '
+                    'camera feedback.'
+                )
+                return
+
             self.write_waypoint_result(
                 robot_x, robot_y, robot_yaw, dx, dy,
                 distance_error, heading_error,
