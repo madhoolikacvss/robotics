@@ -12,6 +12,7 @@ from .waypoint_motion import (
     CONTROL_PERIOD,
     POSITION_TOLERANCE,
     WaypointMotion,
+    estimate_angular_displacement,
     wrap_angle,
 )
 
@@ -33,6 +34,8 @@ class DeadReckoningWaypointController(Node):
         self.motion = WaypointMotion()
         self.last_time = self._now_seconds()
         self.last_command = Twist()
+        self.angular_command_direction = 0.0
+        self.angular_command_elapsed = 0.0
         self.last_log_time: Optional[float] = None
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -52,9 +55,24 @@ class DeadReckoningWaypointController(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def _integrate_command(self, dt: float):
+        if dt <= 0.0:
+            return
         linear = self.last_command.linear.x
-        angular = self.last_command.angular.z
-        next_yaw = self.yaw + angular * dt
+        angular_command = self.last_command.angular.z
+        direction = (
+            math.copysign(1.0, angular_command)
+            if abs(angular_command) > 1e-9 else 0.0
+        )
+        if direction != self.angular_command_direction:
+            self.angular_command_elapsed = 0.0
+            self.angular_command_direction = direction
+        angular_displacement, self.angular_command_elapsed = (
+            estimate_angular_displacement(
+                angular_command, self.angular_command_elapsed, dt
+            )
+        )
+        angular = angular_displacement / dt
+        next_yaw = self.yaw + angular_displacement
         if abs(angular) > 1e-9:
             self.x += linear / angular * (
                 math.sin(next_yaw) - math.sin(self.yaw)
@@ -113,7 +131,7 @@ class DeadReckoningWaypointController(Node):
             linear, angular, action, _, _, heading_error, distance_error,
         ) = self.motion.command_for_pose(self.x, self.y, self.yaw)
         linear, angular = self.motion.shape_turn(
-            now, linear, angular, heading_error
+            linear, angular, heading_error
         )
 
         self.last_command = Twist()

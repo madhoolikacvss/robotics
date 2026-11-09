@@ -35,6 +35,8 @@ setup(
             'dead_reckoning_waypoint_controller = '
             'hw3.dead_reckoning_waypoint_controller:main',
             'ekf_localizer = hw3.ekf_localizer:main',
+            'calibrate_angular_motion = '
+            'hw3.calibrate_angular_motion:main',
         ],
     },
 )

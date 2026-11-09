@@ -6,25 +6,57 @@ from .velocity_mapping import K_OMEGA, K_V
 
 WAYPOINTS = (
     (0.00, 0.00, 0.0),
-    (0.80, 0.00, 0.0),
-    (0.80, 1.60, math.pi),
-    (0.00, 0.00, 0.0),
+    (0.00, 0.00, math.pi / 2),
+
+    # (1.0, 0.00, 0.0),
+    # (0.80, 1.60, math.pi),
+    # (0.00, 0.00, 0.0),
 )
 
 CONTROL_PERIOD = 0.02
-K_HEADING = 0.10
 K_DISTANCE = 0.8
-POSITION_TOLERANCE = 0.08
+POSITION_TOLERANCE = 0.01
 HEADING_TOLERANCE = 0.11
-COARSE_TURN_RATE = 2.2
-COARSE_TURN_CAPTURE_ANGLE = math.radians(15.0)
-FINE_TURN_PULSE_DURATION = 0.05
-FINE_TURN_PAUSE_DURATION = 0.20
+# Direction-specific measured turn rates at the controller's K_OMEGA.
+ANGULAR_RATE_CCW = 1.6 # 1.86
+ANGULAR_RATE_CW = 1.9 #2.16
+ANGULAR_ANGLE_OFFSET_CCW = -0.35
+ANGULAR_ANGLE_OFFSET_CW = -0.32
 
 
 def wrap_angle(angle: float) -> float:
     """Normalize an angle to [-pi, pi)."""
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def estimate_angular_velocity(command: float) -> float:
+    """Estimate turn rate using the calibration for the command direction."""
+    if abs(command) <= 1e-9:
+        return 0.0
+    rate = ANGULAR_RATE_CCW if command > 0.0 else ANGULAR_RATE_CW
+    return math.copysign(rate, command)
+
+
+def estimate_angular_displacement(
+    command: float, elapsed: float, dt: float
+) -> tuple[float, float]:
+    """Estimate turn angle over a timestep, including calibrated startup lag."""
+    if dt <= 0.0:
+        return 0.0, elapsed
+    if abs(command) <= 1e-9:
+        return 0.0, 0.0
+
+    rate = estimate_angular_velocity(command)
+    angle_offset = (
+        ANGULAR_ANGLE_OFFSET_CCW
+        if command > 0.0 else ANGULAR_ANGLE_OFFSET_CW
+    )
+    startup_delay = max(0.0, -angle_offset / abs(rate))
+    next_elapsed = elapsed + dt
+    active_duration = max(0.0, next_elapsed - startup_delay) - max(
+        0.0, elapsed - startup_delay
+    )
+    return rate * active_duration, next_elapsed
 
 
 class WaypointMotion:
@@ -35,10 +67,9 @@ class WaypointMotion:
         self.current_waypoint_idx = 0
         self.phase = 'position'
         self.finished = False
-        self.turn_mode = 'idle'
+        self.turn_started = False
+        self.turn_complete = False
         self.turn_direction = 0.0
-        self.turn_until = 0.0
-        self.turn_pause_until = 0.0
 
     def command_for_pose(
         self, robot_x: float, robot_y: float, robot_yaw: float
@@ -51,44 +82,38 @@ class WaypointMotion:
 
         if self.phase == 'position' and distance_error <= POSITION_TOLERANCE:
             self.phase = 'heading'
+            self.reset_turn()
 
         if self.phase == 'position':
             desired_heading = math.atan2(dy, dx)
             heading_error = wrap_angle(desired_heading - robot_yaw)
-            angular = max(
-                -K_OMEGA,
-                min(
-                    K_HEADING * heading_error,
-                    K_OMEGA,
-                ),
-            )
-            if abs(heading_error) > HEADING_TOLERANCE:
-                angular = math.copysign(
-                    K_OMEGA, heading_error
+            if self.turn_complete:
+                linear = min(
+                    K_V,
+                    max(0.0, K_DISTANCE * distance_error),
                 )
-                action = 'turn'
+                angular = 0.0
+                action = 'drive'
+            elif abs(heading_error) > HEADING_TOLERANCE:
                 linear = 0.0
+                angular = math.copysign(K_OMEGA, heading_error)
+                action = 'turn'
             else:
                 linear = min(
                     K_V,
                     max(0.0, K_DISTANCE * distance_error),
                 )
+                angular = 0.0
                 action = 'drive'
         else:
             heading_error = wrap_angle(waypoint[2] - robot_yaw)
-            angular = max(
-                -K_OMEGA,
-                min(
-                    K_HEADING * heading_error,
-                    K_OMEGA,
-                ),
-            )
             linear = 0.0
-            action = (
-                'final_heading_turn'
-                if abs(heading_error) > HEADING_TOLERANCE
-                else 'reached'
-            )
+            if self.turn_complete or abs(heading_error) <= HEADING_TOLERANCE:
+                angular = 0.0
+                action = 'reached'
+            else:
+                angular = math.copysign(K_OMEGA, heading_error)
+                action = 'final_heading_turn'
 
         return (
             linear, angular, action, dx, dy, heading_error, distance_error
@@ -96,60 +121,31 @@ class WaypointMotion:
 
     def shape_turn(
         self,
-        now: float,
         linear: float,
         angular: float,
         heading_error: float,
-        allow_new_turn: bool = True,
     ) -> tuple[float, float]:
-        """Apply the shared coarse-turn and fine-pulse behavior."""
+        """Continue turning until pose feedback reaches or passes the target."""
         if abs(linear) >= 1e-6 or abs(angular) <= 1e-6:
-            self.reset_turn()
-            return linear, angular
+            return linear, 0.0
+        if self.turn_complete:
+            return linear, 0.0
 
-        direction = math.copysign(1.0, angular)
-        if direction != self.turn_direction:
-            self.turn_mode = 'idle'
-            self.turn_direction = direction
+        if not self.turn_started:
+            self.turn_started = True
+            self.turn_direction = math.copysign(1.0, heading_error)
 
-        output_angular = 0.0
-        if self.turn_mode == 'coarse':
-            turn_complete = (
-                now >= self.turn_until
-                or abs(heading_error) <= COARSE_TURN_CAPTURE_ANGLE
-                or heading_error * direction <= 0.0
-            )
-            if turn_complete:
-                self.turn_mode = 'fine_pause'
-                self.turn_pause_until = now + FINE_TURN_PAUSE_DURATION
-            else:
-                output_angular = direction * K_OMEGA
-        elif self.turn_mode == 'fine_pulse':
-            if now < self.turn_until:
-                output_angular = direction * K_OMEGA
-            else:
-                self.turn_mode = 'fine_pause'
-                self.turn_pause_until = now + FINE_TURN_PAUSE_DURATION
-        elif self.turn_mode == 'fine_pause':
-            if now >= self.turn_pause_until:
-                self.turn_mode = 'idle'
+        if (
+            abs(heading_error) <= HEADING_TOLERANCE
+            or heading_error * self.turn_direction <= 0.0
+        ):
+            self.turn_complete = True
+            return 0.0, 0.0
 
-        if self.turn_mode == 'idle' and allow_new_turn:
-            if abs(heading_error) > COARSE_TURN_CAPTURE_ANGLE:
-                self.turn_mode = 'coarse'
-                self.turn_until = now + (
-                    abs(heading_error) / COARSE_TURN_RATE
-                )
-                output_angular = direction * K_OMEGA
-            else:
-                self.turn_mode = 'fine_pulse'
-                self.turn_until = now + FINE_TURN_PULSE_DURATION
-                output_angular = direction * K_OMEGA
-
-        return 0.0, output_angular
+        return 0.0, self.turn_direction * K_OMEGA
 
     def advance_waypoint(self):
-        """Move to the next waypoint and reset turn state."""
+        """Move to the next waypoint."""
         self.current_waypoint_idx += 1
         self.reset_turn()
         if self.current_waypoint_idx >= len(self.waypoints):
@@ -158,7 +154,6 @@ class WaypointMotion:
             self.phase = 'position'
 
     def reset_turn(self):
-        self.turn_mode = 'idle'
+        self.turn_started = False
+        self.turn_complete = False
         self.turn_direction = 0.0
-        self.turn_until = 0.0
-        self.turn_pause_until = 0.0

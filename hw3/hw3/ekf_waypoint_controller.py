@@ -212,7 +212,7 @@ class EKFWaypointController(Node):
             )
 
         linear, angular = self.motion.shape_turn(
-            now, linear, angular, heading_error
+            linear, angular, heading_error
         )
         cmd = Twist()
         cmd.linear.x = linear

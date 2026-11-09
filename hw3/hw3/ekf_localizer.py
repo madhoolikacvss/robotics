@@ -13,6 +13,8 @@ from rclpy.node import Node
 from rclpy.time import Time
 from tf2_ros import Buffer, TransformException, TransformListener
 
+from .waypoint_motion import estimate_angular_displacement
+
 
 def wrap_angle(angle: float) -> float:
     """Normalize an angle to [-pi, pi)."""
@@ -204,6 +206,8 @@ class AprilTagEKFLocalizer(Node):
 
         self.linear_velocity = 0.0
         self.angular_velocity = 0.0
+        self.angular_command_direction = 0.0
+        self.angular_command_elapsed = 0.0
         self.last_command_time: Optional[float] = None
         now = self._now_seconds()
         self.last_prediction_time = now
@@ -247,6 +251,8 @@ class AprilTagEKFLocalizer(Node):
             self.last_command_time = None
             self.linear_velocity = 0.0
             self.angular_velocity = 0.0
+            self.angular_command_direction = 0.0
+            self.angular_command_elapsed = 0.0
             self.last_used_tag_stamp = {
                 tag_frame: 0.0 for tag_frame in self.tag_positions_world
             }
@@ -259,7 +265,20 @@ class AprilTagEKFLocalizer(Node):
             and now - self.last_command_time <= self.command_timeout
         )
         linear_velocity = self.linear_velocity if command_is_fresh else 0.0
-        angular_velocity = self.angular_velocity if command_is_fresh else 0.0
+        angular_command = self.angular_velocity if command_is_fresh else 0.0
+        direction = (
+            math.copysign(1.0, angular_command)
+            if abs(angular_command) > 1e-9 else 0.0
+        )
+        if direction != self.angular_command_direction:
+            self.angular_command_elapsed = 0.0
+            self.angular_command_direction = direction
+        angular_displacement, self.angular_command_elapsed = (
+            estimate_angular_displacement(
+                angular_command, self.angular_command_elapsed, dt
+            )
+        )
+        angular_velocity = angular_displacement / dt
         self.ekf.predict(linear_velocity, angular_velocity, dt)
         self.last_prediction_time = now
 
