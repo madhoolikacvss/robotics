@@ -6,7 +6,7 @@ from .velocity_mapping import K_OMEGA, K_V
 
 WAYPOINTS = (
     (0.00, 0.00, 0.0),
-    (0.00, 0.00, math.pi / 2),
+    (1.00, 0.00, 0.0),
 
     # (1.0, 0.00, 0.0),
     # (0.80, 1.60, math.pi),

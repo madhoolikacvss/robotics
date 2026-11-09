@@ -5,7 +5,7 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import Float32MultiArray
 import numpy as np
 
-K_V = 0.14
+K_V = 0.22
 K_OMEGA = 0.35
 MIN_FORWARD_VELOCITY = 0.22
 
