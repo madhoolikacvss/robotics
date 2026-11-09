@@ -124,23 +124,18 @@ class WaypointMotion:
         if self.phase == 'position' and distance_error <= POSITION_TOLERANCE:
             self.phase = 'heading'
             self.reset_turn()
+        elif self.phase == 'heading' and distance_error > POSITION_TOLERANCE:
+            self.phase = 'position'
+            self.reset_turn()
 
         if self.phase == 'position':
             desired_heading = math.atan2(dy, dx)
             heading_error = wrap_angle(desired_heading - robot_yaw)
-            if self.turn_complete:
-                linear = min(
-                    K_V,
-                    max(0.0, K_DISTANCE * distance_error),
-                )
-                angular = 0.0
-                action = 'drive'
-            elif abs(heading_error) > HEADING_TOLERANCE:
+            if abs(heading_error) > HEADING_TOLERANCE:
                 linear = 0.0
                 angular = math.copysign(K_OMEGA, heading_error)
                 action = 'turn'
             else:
-                # self.turn_complete = True
                 linear = min(
                     K_V,
                     max(0.0, K_DISTANCE * distance_error),
@@ -150,7 +145,7 @@ class WaypointMotion:
         else:
             heading_error = wrap_angle(waypoint[2] - robot_yaw)
             linear = 0.0
-            if self.turn_complete or abs(heading_error) <= HEADING_TOLERANCE:
+            if abs(heading_error) <= HEADING_TOLERANCE:
                 angular = 0.0
                 action = 'reached'
             else:
@@ -167,23 +162,19 @@ class WaypointMotion:
         angular: float,
         heading_error: float,
     ) -> tuple[float, float]:
-        """Continue turning until pose feedback reaches or passes the target."""
+        """Turn toward the current error, allowing correction after overshoot."""
         if abs(linear) >= 1e-6 or abs(angular) <= 1e-6:
-            return linear, 0.0
-        if self.turn_complete:
+            self.reset_turn()
             return linear, 0.0
 
-        if not self.turn_started:
-            self.turn_started = True
-            self.turn_direction = math.copysign(1.0, heading_error)
-
-        if (
-            abs(heading_error) <= HEADING_TOLERANCE
-            or heading_error * self.turn_direction <= 0.0
-        ):
+        if abs(heading_error) <= HEADING_TOLERANCE:
+            self.reset_turn()
             self.turn_complete = True
             return 0.0, 0.0
 
+        self.turn_started = True
+        self.turn_complete = False
+        self.turn_direction = math.copysign(1.0, heading_error)
         return 0.0, self.turn_direction * K_OMEGA
 
     def advance_waypoint(self):
