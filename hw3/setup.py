@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/hw3.launch.py',
             'launch/dead_reckoning.launch.py',
+            'launch/motor_mapping.launch.py',
         ]),
     ],
     install_requires=['setuptools'],

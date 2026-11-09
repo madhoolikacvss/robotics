@@ -6,22 +6,39 @@ from .velocity_mapping import K_OMEGA, K_V
 
 WAYPOINTS = (
     (0.00, 0.00, 0.0),
-    (1.00, 0.00, 0.0),
+    # (0.00, 0.00, math.pi/2),
 
+    (1.00, 0.00, 0.00),
+    (1.00, 1.00, math.pi/2),
+    (0.00, 1.00, math.pi),
+    (0.00, 0.00, 0.00),
     # (1.0, 0.00, 0.0),
     # (0.80, 1.60, math.pi),
     # (0.00, 0.00, 0.0),
 )
 
-CONTROL_PERIOD = 0.02
+CONTROL_PERIOD = 0.01
 K_DISTANCE = 0.8
-POSITION_TOLERANCE = 0.01
+POSITION_TOLERANCE = 0.04
 HEADING_TOLERANCE = 0.11
 # Direction-specific measured turn rates at the controller's K_OMEGA.
-ANGULAR_RATE_CCW = 1.6 # 1.86
-ANGULAR_RATE_CW = 1.9 #2.16
-ANGULAR_ANGLE_OFFSET_CCW = -0.35
-ANGULAR_ANGLE_OFFSET_CW = -0.32
+# Low battery constants
+# ANGULAR_RATE_CCW = 1.6 # 1.86
+# ANGULAR_RATE_CW = 1.9 #2.16
+# ANGULAR_ANGLE_OFFSET_CCW = -0.35
+# ANGULAR_ANGLE_OFFSET_CW = -0.32
+
+# High battery constants
+# ANGULAR_RATE_CCW = 2.37 # 2.07
+# ANGULAR_RATE_CW = 2.75 #2.16
+# ANGULAR_ANGLE_OFFSET_CCW = -0.39 # -0.59
+# ANGULAR_ANGLE_OFFSET_CW = -0.56
+
+# Testing
+ANGULAR_RATE_CCW = 2.65 # 2.07
+ANGULAR_RATE_CW = 3.4 #2.16
+ANGULAR_ANGLE_OFFSET_CCW = -0.22 # -0.59
+ANGULAR_ANGLE_OFFSET_CW = -0.3
 
 
 def wrap_angle(angle: float) -> float:
@@ -99,6 +116,7 @@ class WaypointMotion:
                 angular = math.copysign(K_OMEGA, heading_error)
                 action = 'turn'
             else:
+                # self.turn_complete = True
                 linear = min(
                     K_V,
                     max(0.0, K_DISTANCE * distance_error),

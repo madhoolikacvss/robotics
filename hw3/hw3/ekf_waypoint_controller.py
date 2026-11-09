@@ -2,6 +2,8 @@
 """Continuously control a differential-drive robot using AprilTag poses."""
 
 import csv
+import json
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +12,7 @@ import tf_transformations
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped, Twist
+from std_msgs.msg import String
 
 from .waypoint_motion import (
     CONTROL_PERIOD,
@@ -40,10 +43,16 @@ class EKFWaypointController(Node):
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
         self.last_pose_received_time: Optional[float] = None
         self.frame_mismatch_logged = False
+        self.latest_tag_positions: dict[str, tuple[float, float]] = {}
+        self.tag_frame_mismatch_logged = False
+        self.tag_position_log_written = False
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(
             PoseStamped, '/robot_pose_estimate', self.pose_callback, 10
+        )
+        self.create_subscription(
+            String, '/tag_positions', self.tag_positions_callback, 10
         )
 
         self.position_log_path = Path(
@@ -80,6 +89,22 @@ class EKFWaypointController(Node):
             ])
             self.waypoint_log_file.flush()
 
+        self.tag_position_log_path = Path(
+            self.declare_parameter(
+                'tag_position_log_path', 'tag_positions.csv'
+            ).value
+        ).expanduser()
+        self.tag_position_log_file = self.tag_position_log_path.open(
+            'w', newline='', encoding='utf-8'
+        )
+        self.tag_position_log_writer = csv.writer(
+            self.tag_position_log_file
+        )
+        self.tag_position_log_writer.writerow([
+            'timestamp_sec', 'frame', 'tag', 'x', 'y',
+        ])
+        self.tag_position_log_file.flush()
+
         self.timer = self.create_timer(
             self.control_period, self.control_loop
         )
@@ -93,7 +118,8 @@ class EKFWaypointController(Node):
             f'pose timeout={self.pose_timeout:.2f}s. '
             f'Using /robot_pose_estimate and writing positions to '
             f'{self.position_log_path} and '
-            f'waypoint results to {self.waypoint_log_path}.'
+            f'waypoint results to {self.waypoint_log_path}; tag positions '
+            f'will be written to {self.tag_position_log_path} on completion.'
         )
 
     def _now_seconds(self) -> float:
@@ -144,6 +170,7 @@ class EKFWaypointController(Node):
     def destroy_node(self):
         self.position_log_file.close()
         self.waypoint_log_file.close()
+        self.tag_position_log_file.close()
         return super().destroy_node()
 
     def publish_stop(self):
@@ -176,10 +203,90 @@ class EKFWaypointController(Node):
         self.last_pose_received_time = self._now_seconds()
         self.frame_mismatch_logged = False
 
+    def tag_positions_callback(self, msg: String):
+        """Store the latest EKF map of tag positions."""
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as error:
+            self.get_logger().error(
+                f'Rejecting malformed /tag_positions message: {error}.'
+            )
+            return
+
+        if (
+            not isinstance(payload, dict)
+            or payload.get('frame') != self.world_frame
+        ):
+            if not self.tag_frame_mismatch_logged:
+                self.get_logger().error(
+                    'Rejecting tag positions that do not match waypoint '
+                    f'frame {self.world_frame!r}.'
+                )
+                self.tag_frame_mismatch_logged = True
+            return
+
+        tags = payload.get('tags')
+        if not isinstance(tags, list):
+            self.get_logger().error(
+                'Rejecting /tag_positions message with an invalid tags list.'
+            )
+            return
+
+        positions = {}
+        for tag in tags:
+            if not isinstance(tag, dict):
+                self.get_logger().error(
+                    'Rejecting /tag_positions message with an invalid tag.'
+                )
+                return
+            name, x, y = tag.get('name'), tag.get('x'), tag.get('y')
+            if (
+                not isinstance(name, str)
+                or not isinstance(x, (int, float))
+                or not isinstance(y, (int, float))
+                or not math.isfinite(x)
+                or not math.isfinite(y)
+            ):
+                self.get_logger().error(
+                    'Rejecting /tag_positions message with invalid tag '
+                    'coordinates.'
+                )
+                return
+            positions[name] = (float(x), float(y))
+
+        self.latest_tag_positions = positions
+        self.tag_frame_mismatch_logged = False
+
+    def write_tag_positions(self):
+        """Write all estimated tag positions once waypoint motion completes."""
+        if self.tag_position_log_written:
+            return
+
+        timestamp = self._now_seconds()
+        for tag, (x, y) in sorted(self.latest_tag_positions.items()):
+            self.tag_position_log_writer.writerow([
+                f'{timestamp:.9f}', self.world_frame, tag,
+                f'{x:.6f}', f'{y:.6f}',
+            ])
+        self.tag_position_log_file.flush()
+        self.tag_position_log_written = True
+
+        if self.latest_tag_positions:
+            self.get_logger().info(
+                f'Wrote {len(self.latest_tag_positions)} tag positions to '
+                f'{self.tag_position_log_path}.'
+            )
+        else:
+            self.get_logger().warning(
+                'Waypoint motion completed before any tag positions were '
+                f'received; {self.tag_position_log_path} contains no tag rows.'
+            )
+
     def control_loop(self):
         now = self._now_seconds()
 
         if self.motion.finished:
+            self.write_tag_positions()
             self.publish_stop()
             return
 
@@ -248,6 +355,7 @@ class EKFWaypointController(Node):
             self.motion.advance_waypoint()
 
             if self.motion.finished:
+                self.write_tag_positions()
                 self.publish_stop()
                 self.get_logger().info('All waypoints reached.')
                 return

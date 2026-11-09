@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Estimate the robot's planar pose from velocity commands and AprilTags."""
 
+import json
 import math
 from typing import Optional
 
@@ -12,6 +13,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from .waypoint_motion import estimate_angular_displacement
@@ -217,7 +219,7 @@ class AprilTagEKFLocalizer(Node):
             self.declare_parameter('tag_position_std', 0.08).value
         )
         self.gate_threshold = float(
-            self.declare_parameter('mahalanobis_gate', 9.21).value
+            self.declare_parameter('mahalanobis_gate', 100).value
         )
         positive_parameters = (
             self.tag_max_age, self.command_timeout, linear_velocity_std,
@@ -266,6 +268,9 @@ class AprilTagEKFLocalizer(Node):
 
         self.pose_publisher = self.create_publisher(
             PoseStamped, '/robot_pose_estimate', 10
+        )
+        self.tag_positions_publisher = self.create_publisher(
+            String, '/tag_positions', 10
         )
         self.create_subscription(
             Twist, '/cmd_vel', self.command_callback, 10
@@ -415,12 +420,29 @@ class AprilTagEKFLocalizer(Node):
             )
             self.last_log_time = now
 
+    def _publish_tag_positions(self):
+        """Publish the current estimated positions of all mapped tags."""
+        tags = []
+        for tag_frame, index in sorted(self.ekf.landmark_indices.items()):
+            tags.append({
+                'name': tag_frame,
+                'x': float(self.ekf.state[index]),
+                'y': float(self.ekf.state[index + 1]),
+            })
+        message = String()
+        message.data = json.dumps({
+            'frame': self.world_frame,
+            'tags': tags,
+        })
+        self.tag_positions_publisher.publish(message)
+
     def filter_step(self):
         """Run one prediction, measurement-update, and publication cycle."""
         now = self._now_seconds()
         self._predict(now)
         accepted_tags = self._observe_visible_tags(now)
         self._publish_pose(now, accepted_tags)
+        self._publish_tag_positions()
 
 
 def main(args=None):
