@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Estimate the robot's planar pose from velocity commands and AprilTags."""
 
+import csv
 import json
 import math
+from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 import numpy as np
 import rclpy
@@ -41,6 +44,7 @@ class PlanarRobotEKF:
         self.measurement_noise = measurement_noise
         self.gate_threshold = gate_threshold
         self.landmark_indices: dict[str, int] = {}
+        self.last_update_diagnostics = {}
 
     def predict(
         self, linear_velocity: float, angular_velocity: float, dt: float
@@ -156,6 +160,13 @@ class PlanarRobotEKF:
         mahalanobis_squared = float(
             innovation.T @ np.linalg.solve(innovation_covariance, innovation)
         )
+        self.last_update_diagnostics = {
+            'predicted_x': float(predicted[0]),
+            'predicted_y': float(predicted[1]),
+            'residual_x': float(innovation[0]),
+            'residual_y': float(innovation[1]),
+            'mahalanobis_squared': mahalanobis_squared,
+        }
         if mahalanobis_squared > self.gate_threshold:
             return None
 
@@ -265,6 +276,24 @@ class AprilTagEKFLocalizer(Node):
         self.last_prediction_time = now
         self.last_used_tag_stamp: dict[str, float] = {}
         self.last_log_time: Optional[float] = None
+        self.diagnostics_log_path = Path(self.declare_parameter(
+            'tag_diagnostics_log_path',
+            f'tag_update_diagnostics_{uuid4().hex[:12]}.csv',
+        ).value).expanduser()
+        self.diagnostics_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.diagnostics_log_file = self.diagnostics_log_path.open(
+            'x', newline='', encoding='utf-8'
+        )
+        self.diagnostics_writer = csv.DictWriter(
+            self.diagnostics_log_file, fieldnames=[
+                'timestamp_sec', 'observation_timestamp_sec', 'age_sec',
+                'frame', 'tag', 'status', 'observed_x', 'observed_y',
+                'predicted_x', 'predicted_y', 'residual_x', 'residual_y',
+                'mahalanobis_squared', 'gate_threshold',
+            ]
+        )
+        self.diagnostics_writer.writeheader()
+        self.diagnostics_log_file.flush()
 
         self.pose_publisher = self.create_publisher(
             PoseStamped, '/robot_pose_estimate', 10
@@ -281,8 +310,25 @@ class AprilTagEKFLocalizer(Node):
 
         self.get_logger().info(
             'AprilTag EKF localizer started; subscribes to /cmd_vel and '
-            'publishes /robot_pose_estimate.'
+            'publishes /robot_pose_estimate. Tag diagnostics: '
+            f'{self.diagnostics_log_path}'
         )
+
+    def destroy_node(self):
+        """Flush and close the observation log."""
+        self.diagnostics_log_file.close()
+        return super().destroy_node()
+
+    def log_tag_update(self, now, stamp, tag, status, observed, details=None):
+        """Log each processed observation; new landmarks have no residual."""
+        self.diagnostics_writer.writerow({
+            'timestamp_sec': now, 'observation_timestamp_sec': stamp,
+            'age_sec': now - stamp, 'frame': 'base_link', 'tag': tag,
+            'status': status, 'observed_x': float(observed[0]),
+            'observed_y': float(observed[1]),
+            'gate_threshold': self.gate_threshold, **(details or {}),
+        })
+        self.diagnostics_log_file.flush()
 
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -378,9 +424,18 @@ class AprilTagEKFLocalizer(Node):
             )
             if tag_frame not in self.ekf.landmark_indices:
                 self.ekf.add_landmark(tag_frame, tag_position_base[:2])
+                self.log_tag_update(
+                    now, stamp_seconds, tag_frame, 'initialized',
+                    tag_position_base[:2],
+                )
             else:
                 mahalanobis_squared = self.ekf.update(
                     tag_frame, tag_position_base[:2]
+                )
+                self.log_tag_update(
+                    now, stamp_seconds, tag_frame,
+                    'rejected_gate' if mahalanobis_squared is None else 'accepted',
+                    tag_position_base[:2], self.ekf.last_update_diagnostics,
                 )
                 if mahalanobis_squared is None:
                     self.get_logger().warning(
@@ -428,10 +483,14 @@ class AprilTagEKFLocalizer(Node):
                 'name': tag_frame,
                 'x': float(self.ekf.state[index]),
                 'y': float(self.ekf.state[index + 1]),
+                'cov_xx': float(self.ekf.covariance[index, index]),
+                'cov_xy': float(self.ekf.covariance[index, index + 1]),
+                'cov_yy': float(self.ekf.covariance[index + 1, index + 1]),
             })
         message = String()
         message.data = json.dumps({
             'frame': self.world_frame,
+            'timestamp_sec': self._now_seconds(),
             'tags': tags,
         })
         self.tag_positions_publisher.publish(message)

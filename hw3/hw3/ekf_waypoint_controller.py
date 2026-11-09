@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 import rclpy
 import tf_transformations
@@ -50,10 +51,22 @@ class EKFWaypointController(Node):
         self.desired_command = Twist()
         self.stale_stop_logged = False
         self.final_waypoint_wait_started: Optional[float] = None
+        self.final_waypoint_settled = False
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
         self.last_pose_received_time: Optional[float] = None
         self.frame_mismatch_logged = False
-        self.latest_tag_positions: dict[str, tuple[float, float]] = {}
+        self.latest_tag_positions: dict[str, tuple[float, ...]] = {}
+        self.latest_map_timestamp: Optional[float] = None
+        self.lap_end_indices = list(self.declare_parameter(
+            'lap_end_waypoint_indices', [4, 8]
+        ).value)
+        if (
+            self.lap_end_indices != sorted(set(self.lap_end_indices))
+            or any(i <= 0 or i >= len(self.motion.waypoints)
+                   for i in self.lap_end_indices)
+        ):
+            raise ValueError('Lap end indices must be increasing valid waypoint indices.')
+        self.completed_laps = 0
         self.tag_frame_mismatch_logged = False
         self.tag_position_log_written = False
 
@@ -112,8 +125,28 @@ class EKFWaypointController(Node):
         )
         self.tag_position_log_writer.writerow([
             'timestamp_sec', 'frame', 'tag', 'x', 'y',
+            'cov_xx', 'cov_xy', 'cov_yy',
         ])
         self.tag_position_log_file.flush()
+
+        self.map_snapshot_log_path = Path(self.declare_parameter(
+            'map_snapshot_log_path', f'map_snapshots_{uuid4().hex[:12]}.csv'
+        ).value).expanduser()
+        self.map_snapshot_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.map_snapshot_log_file = self.map_snapshot_log_path.open(
+            'x', newline='', encoding='utf-8'
+        )
+        self.map_snapshot_writer = csv.writer(self.map_snapshot_log_file)
+        self.map_snapshot_writer.writerow([
+            'timestamp_sec', 'map_timestamp_sec', 'lap', 'waypoint_index',
+            'frame', 'landmark_count', 'tag', 'x', 'y',
+            'cov_xx', 'cov_xy', 'cov_yy',
+        ])
+        self.map_snapshot_log_file.flush()
+        self.get_logger().info(
+            f'Per-lap maps: {self.map_snapshot_log_path}; '
+            f'lap end waypoint indices: {self.lap_end_indices}'
+        )
 
         self.timer = self.create_timer(
             self.control_period, self.control_loop
@@ -181,6 +214,7 @@ class EKFWaypointController(Node):
         self.position_log_file.close()
         self.waypoint_log_file.close()
         self.tag_position_log_file.close()
+        self.map_snapshot_log_file.close()
         return super().destroy_node()
 
     def publish_stop(self):
@@ -243,6 +277,10 @@ class EKFWaypointController(Node):
             return
 
         positions = {}
+        map_timestamp = payload.get('timestamp_sec')
+        if not isinstance(map_timestamp, (int, float)) or not math.isfinite(map_timestamp):
+            self.get_logger().error('Rejecting map with missing or invalid timestamp.')
+            return
         for tag in tags:
             if not isinstance(tag, dict):
                 self.get_logger().error(
@@ -262,10 +300,34 @@ class EKFWaypointController(Node):
                     'coordinates.'
                 )
                 return
-            positions[name] = (float(x), float(y))
+            covariance = [tag.get(key) for key in ('cov_xx', 'cov_xy', 'cov_yy')]
+            if not all(isinstance(v, (int, float)) and math.isfinite(v)
+                       for v in covariance):
+                self.get_logger().error('Rejecting map with missing or invalid covariance.')
+                return
+            positions[name] = (float(x), float(y), *map(float, covariance))
 
         self.latest_tag_positions = positions
+        self.latest_map_timestamp = float(map_timestamp)
         self.tag_frame_mismatch_logged = False
+
+    def write_lap_snapshot(self):
+        """Save the latest received map at each configured lap boundary."""
+        index = self.motion.current_waypoint_idx
+        if index not in self.lap_end_indices:
+            return
+        self.completed_laps += 1
+        prefix = [
+            self._now_seconds(), self.latest_map_timestamp,
+            self.completed_laps, index, self.world_frame,
+            len(self.latest_tag_positions),
+        ]
+        for tag, values in sorted(self.latest_tag_positions.items()):
+            self.map_snapshot_writer.writerow([*prefix, tag, *values])
+        if not self.latest_tag_positions:
+            # Preserve evidence of the lap even if no map was received.
+            self.map_snapshot_writer.writerow([*prefix, '', '', '', '', '', ''])
+        self.map_snapshot_log_file.flush()
 
     def write_tag_positions(self):
         """Write all estimated tag positions once waypoint motion completes."""
@@ -273,10 +335,10 @@ class EKFWaypointController(Node):
             return
 
         timestamp = self._now_seconds()
-        for tag, (x, y) in sorted(self.latest_tag_positions.items()):
+        for tag, values in sorted(self.latest_tag_positions.items()):
             self.tag_position_log_writer.writerow([
                 f'{timestamp:.9f}', self.world_frame, tag,
-                f'{x:.6f}', f'{y:.6f}',
+                *values,
             ])
         self.tag_position_log_file.flush()
         self.tag_position_log_written = True
@@ -322,6 +384,7 @@ class EKFWaypointController(Node):
                 self.publish_stop()
                 return
             self.final_waypoint_wait_started = None
+            self.final_waypoint_settled = True
 
         self.stale_stop_logged = False
         robot_x, robot_y, robot_yaw = self.latest_estimated_position
@@ -330,6 +393,8 @@ class EKFWaypointController(Node):
         (
             linear, angular, action, dx, dy, heading_error, distance_error,
         ) = self.motion.command_for_pose(robot_x, robot_y, robot_yaw)
+        if action != 'reached':
+            self.final_waypoint_settled = False
         if previous_phase == 'position' and self.motion.phase == 'heading':
             self.get_logger().info(
                 f'Waypoint {self.motion.current_waypoint_idx}: position '
@@ -366,6 +431,7 @@ class EKFWaypointController(Node):
                 self.motion.current_waypoint_idx
                 == len(self.motion.waypoints) - 1
                 and self.final_waypoint_wait_started is None
+                and not self.final_waypoint_settled
             ):
                 self.final_waypoint_wait_started = now
                 self.publish_stop()
@@ -385,6 +451,7 @@ class EKFWaypointController(Node):
                 f'position error={distance_error:.3f}m, '
                 f'heading error={heading_error:.3f}rad.'
             )
+            self.write_lap_snapshot()
             self.motion.advance_waypoint()
 
             if self.motion.finished:
