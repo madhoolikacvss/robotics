@@ -171,17 +171,20 @@ The only thing that could derail this plan is an incorrect `T_base_cam` orientat
 ### EKF localization without waypoint following
 
 `hw3/hw3/ekf_localizer.py` is a standalone ROS 2 node that estimates the
-robot's planar pose from `/cmd_vel` and fresh AprilTag TF positions. It uses
-the known tag map and camera mounting transform from the waypoint controller;
-tag orientation is not used. The EKF predicts from commanded linear/angular
-velocity and corrects against each visible tag position, rejecting
-measurements outside a Mahalanobis validation gate.
+robot's planar pose and a map of AprilTags from `/cmd_vel` and fresh tag TF
+positions. It discovers `tag_*` frames from TF and adds each landmark to its
+EKF-SLAM state on first observation, so it requires neither known tag
+coordinates nor a configured tag count. Tag orientation is not used. The
+initial robot pose defaults to `(0, 0, 0)`, defining the relative map frame;
+the filter predicts from commanded linear/angular velocity and uses repeated
+tag observations to correct the robot and landmark estimates.
 
 After building and sourcing the ROS workspace, run `ros2 run hw3 ekf_localizer`.
 The node subscribes to `/cmd_vel` and publishes `PoseStamped` on
 `/robot_pose_estimate`. It does not publish velocity commands or follow
 waypoints. To run it without waypoint following, do not launch
-`ekf_waypoint_controller` alongside it. The initial pose defaults to
-`(0, 0, 0)` in `odom`; adjust the `initial_x`, `initial_y`, and `initial_yaw`
-ROS parameters if the robot starts elsewhere. The default camera frame is
-`camera_frame` and can be changed with the `camera_frame` parameter.
+`ekf_waypoint_controller` alongside it. Adjust `initial_x`, `initial_y`, and
+`initial_yaw` only if you want a different relative origin; optional initial
+pose standard deviations can express uncertainty in that origin. The default
+camera frame is `camera_frame` and can be changed with the `camera_frame`
+parameter.
