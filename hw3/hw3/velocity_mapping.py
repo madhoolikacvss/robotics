@@ -6,7 +6,7 @@ from std_msgs.msg import Float32MultiArray
 import numpy as np
 
 K_V = 0.12
-K_OMEGA = 0.3
+K_OMEGA = 0.35
 # MIN_FORWARD_VELOCITY = 0.22
 
 
