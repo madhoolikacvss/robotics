@@ -49,6 +49,22 @@ class EKFWaypointController(Node):
             )
 
         self.control_period = CONTROL_PERIOD
+        self.forward_pulse_distance = float(self.declare_parameter(
+            'forward_pulse_distance', 0.50
+        ).value)
+        self.forward_pulse_duration = float(self.declare_parameter(
+            'forward_pulse_duration', 0.20
+        ).value)
+        self.forward_observation_pause = float(self.declare_parameter(
+            'forward_observation_pause', 0.40
+        ).value)
+        if any(not math.isfinite(v) or v <= 0.0 for v in (
+            self.forward_pulse_distance, self.forward_pulse_duration,
+            self.forward_observation_pause,
+        )):
+            raise ValueError('Forward pulse parameters must be finite and positive.')
+        self.forward_pulse_started: Optional[float] = None
+        self.forward_pause_started: Optional[float] = None
         self.last_control_log_time: Optional[float] = None
         self.desired_command = Twist()
         self.stale_stop_logged = False
@@ -388,6 +404,32 @@ class EKFWaypointController(Node):
                 f'{self.tag_position_log_path}.'
             )
 
+    def shape_forward_approach(self, now, linear, angular, action, distance):
+        """Limit near-target forward bursts; pauses allow camera processing.
+
+        A timed pause does not guarantee that a fresh tag was visible.
+        No angular command is modified outside an observation pause.
+        """
+        if self.forward_pause_started is not None:
+            if now < self.forward_pause_started:
+                self.forward_pause_started = now
+            if now - self.forward_pause_started < self.forward_observation_pause:
+                return 0.0, 0.0, 'observation_pause'
+            self.forward_pause_started = None
+
+        if action != 'drive' or linear <= 0.0 or distance > self.forward_pulse_distance:
+            self.forward_pulse_started = None
+            return linear, angular, action
+
+        if self.forward_pulse_started is None or now < self.forward_pulse_started:
+            self.forward_pulse_started = now
+        if now - self.forward_pulse_started >= self.forward_pulse_duration:
+            self.forward_pulse_started = None
+            self.forward_pause_started = now
+            self.get_logger().info('Forward approach: stopping for camera observation.')
+            return 0.0, 0.0, 'observation_pause'
+        return linear, angular, action
+
     def control_loop(self):
         now = self._now_seconds()
 
@@ -401,6 +443,7 @@ class EKFWaypointController(Node):
             or self.last_pose_received_time is None
             or now - self.last_pose_received_time > self.pose_timeout
         ):
+            self.forward_pulse_started = None
             self.publish_stop()
             if not self.stale_stop_logged:
                 self.get_logger().warning(
@@ -438,6 +481,9 @@ class EKFWaypointController(Node):
 
         linear, angular = self.motion.shape_turn(
             linear, angular, heading_error
+        )
+        linear, angular, action = self.shape_forward_approach(
+            now, linear, angular, action, distance_error
         )
         cmd = Twist()
         cmd.linear.x = linear
