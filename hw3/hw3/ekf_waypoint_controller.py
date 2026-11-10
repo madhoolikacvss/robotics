@@ -4,7 +4,9 @@
 import csv
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 from typing import Optional
 from uuid import uuid4
 
@@ -69,6 +71,8 @@ class EKFWaypointController(Node):
         self.completed_laps = 0
         self.tag_frame_mismatch_logged = False
         self.tag_position_log_written = False
+        self.last_saved_map_timestamp = None
+        self.snapshot_id = 0
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(
@@ -117,21 +121,12 @@ class EKFWaypointController(Node):
                 'tag_position_log_path', 'tag_positions.csv'
             ).value
         ).expanduser()
-        self.tag_position_log_file = self.tag_position_log_path.open(
-            'w', newline='', encoding='utf-8'
-        )
-        self.tag_position_log_writer = csv.writer(
-            self.tag_position_log_file
-        )
-        self.tag_position_log_writer.writerow([
-            'timestamp_sec', 'frame', 'tag', 'x', 'y',
-            'cov_xx', 'cov_xy', 'cov_yy',
-        ])
-        self.tag_position_log_file.flush()
+        self.tag_position_log_path = self.tag_position_log_path.resolve()
+        self.tag_position_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.map_snapshot_log_path = Path(self.declare_parameter(
             'map_snapshot_log_path', f'map_snapshots_{uuid4().hex[:12]}.csv'
-        ).value).expanduser()
+        ).value).expanduser().resolve()
         self.map_snapshot_log_path.parent.mkdir(parents=True, exist_ok=True)
         self.map_snapshot_log_file = self.map_snapshot_log_path.open(
             'x', newline='', encoding='utf-8'
@@ -141,8 +136,10 @@ class EKFWaypointController(Node):
             'timestamp_sec', 'map_timestamp_sec', 'lap', 'waypoint_index',
             'frame', 'landmark_count', 'tag', 'x', 'y',
             'cov_xx', 'cov_xy', 'cov_yy',
+            'snapshot_id', 'event',
         ])
         self.map_snapshot_log_file.flush()
+        os.fsync(self.map_snapshot_log_file.fileno())
         self.get_logger().info(
             f'Per-lap maps: {self.map_snapshot_log_path}; '
             f'lap end waypoint indices: {self.lap_end_indices}'
@@ -154,6 +151,7 @@ class EKFWaypointController(Node):
         self.position_log_timer = self.create_timer(
             0.5, self.write_position_to_file
         )
+        self.map_log_timer = self.create_timer(1.0, self.log_current_map)
 
         self.get_logger().info(
             'EKF waypoint controller started: '
@@ -162,7 +160,8 @@ class EKFWaypointController(Node):
             f'Using /robot_pose_estimate and writing positions to '
             f'{self.position_log_path} and '
             f'waypoint results to {self.waypoint_log_path}; tag positions '
-            f'will be written to {self.tag_position_log_path} on completion.'
+            f'are saved every second to {self.tag_position_log_path} '
+            'and at completion; map snapshots include periodic and lap events.'
         )
 
     def _now_seconds(self) -> float:
@@ -211,9 +210,11 @@ class EKFWaypointController(Node):
         self.waypoint_log_file.flush()
 
     def destroy_node(self):
+        if self.latest_tag_positions and not self.motion.finished:
+            self.write_tag_positions(force=True)
+            self.write_map_snapshot('shutdown')
         self.position_log_file.close()
         self.waypoint_log_file.close()
-        self.tag_position_log_file.close()
         self.map_snapshot_log_file.close()
         return super().destroy_node()
 
@@ -317,41 +318,74 @@ class EKFWaypointController(Node):
         if index not in self.lap_end_indices:
             return
         self.completed_laps += 1
+        self.write_map_snapshot('lap_end')
+        self.write_tag_positions(force=True)
+
+    def write_map_snapshot(self, event):
+        """Append a complete map with a unique snapshot ID and event label."""
+        self.snapshot_id += 1
         prefix = [
             self._now_seconds(), self.latest_map_timestamp,
-            self.completed_laps, index, self.world_frame,
+            self.completed_laps, self.motion.current_waypoint_idx, self.world_frame,
             len(self.latest_tag_positions),
         ]
         for tag, values in sorted(self.latest_tag_positions.items()):
-            self.map_snapshot_writer.writerow([*prefix, tag, *values])
+            self.map_snapshot_writer.writerow([
+                *prefix, tag, *values, self.snapshot_id, event,
+            ])
         if not self.latest_tag_positions:
             # Preserve evidence of the lap even if no map was received.
-            self.map_snapshot_writer.writerow([*prefix, '', '', '', '', '', ''])
-        self.map_snapshot_log_file.flush()
-
-    def write_tag_positions(self):
-        """Write all estimated tag positions once waypoint motion completes."""
-        if self.tag_position_log_written:
-            return
-
-        timestamp = self._now_seconds()
-        for tag, values in sorted(self.latest_tag_positions.items()):
-            self.tag_position_log_writer.writerow([
-                f'{timestamp:.9f}', self.world_frame, tag,
-                *values,
+            self.map_snapshot_writer.writerow([
+                *prefix, '', '', '', '', '', '', self.snapshot_id, event,
             ])
-        self.tag_position_log_file.flush()
-        self.tag_position_log_written = True
+        self.map_snapshot_log_file.flush()
+        os.fsync(self.map_snapshot_log_file.fileno())
 
-        if self.latest_tag_positions:
+    def log_current_map(self):
+        """Checkpoint fresh maps during motion without mixing in post-run updates."""
+        if self.motion.finished or not self.latest_tag_positions:
+            return
+        if self.latest_map_timestamp == self.last_saved_map_timestamp:
+            return
+        self.write_tag_positions(force=True)
+        self.write_map_snapshot('periodic')
+
+    def write_tag_positions(self, force=False):
+        """Atomically replace the latest map, preserving the prior file on failure."""
+        if self.tag_position_log_written and not force:
+            return
+        if not self.latest_tag_positions:
+            return
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w', newline='', encoding='utf-8', delete=False,
+                dir=self.tag_position_log_path.parent, suffix='.tmp',
+            ) as output:
+                temp_path = Path(output.name)
+                writer = csv.writer(output)
+                writer.writerow([
+                    'timestamp_sec', 'frame', 'tag', 'x', 'y',
+                    'cov_xx', 'cov_xy', 'cov_yy', 'map_timestamp_sec',
+                ])
+                timestamp = self._now_seconds()
+                for tag, values in sorted(self.latest_tag_positions.items()):
+                    writer.writerow([
+                        timestamp, self.world_frame, tag, *values,
+                        self.latest_map_timestamp,
+                    ])
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temp_path, self.tag_position_log_path)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
+        self.last_saved_map_timestamp = self.latest_map_timestamp
+        if not force:
+            self.tag_position_log_written = True
             self.get_logger().info(
-                f'Wrote {len(self.latest_tag_positions)} tag positions to '
+                f'Saved {len(self.latest_tag_positions)} final tag positions to '
                 f'{self.tag_position_log_path}.'
-            )
-        else:
-            self.get_logger().warning(
-                'Waypoint motion completed before any tag positions were '
-                f'received; {self.tag_position_log_path} contains no tag rows.'
             )
 
     def control_loop(self):
