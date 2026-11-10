@@ -19,7 +19,7 @@ from rclpy.time import Time
 from std_msgs.msg import String, Float64
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from .waypoint_motion import estimate_angular_displacement, estimate_angular_velocity
+from .waypoint_motion import estimate_angular_displacement
 
 
 def wrap_angle(angle: float) -> float:
@@ -224,7 +224,7 @@ class AprilTagEKFLocalizer(Node):
             self.declare_parameter('linear_velocity_std', 0.20).value
         )
         angular_velocity_std = float(
-            self.declare_parameter('angular_velocity_std', 0.10).value
+            self.declare_parameter('angular_velocity_std', 0.15).value
         )
         tag_position_std = float(
             self.declare_parameter('tag_position_std', 0.08).value
@@ -274,9 +274,6 @@ class AprilTagEKFLocalizer(Node):
         self.forward_speed_timeout = 0.15
         self.forward_speed_missing_logged = False
         self.angular_velocity = 0.0
-        self.angular_use_startup_lag = bool(self.declare_parameter(
-            'angular_use_startup_lag', False
-        ).value)
         self.angular_command_direction = 0.0
         self.angular_command_elapsed = 0.0
         self.last_command_time: Optional[float] = None
@@ -309,9 +306,6 @@ class AprilTagEKFLocalizer(Node):
 
         self.pose_publisher = self.create_publisher(
             PoseStamped, '/robot_pose_estimate', 10
-        )
-        self.accepted_tag_publisher = self.create_publisher(
-            Float64, '/accepted_tag_observation_stamp', 10
         )
         self.tag_positions_publisher = self.create_publisher(
             String, '/tag_positions', 10
@@ -444,9 +438,6 @@ class AprilTagEKFLocalizer(Node):
             )
         )
         angular_velocity = angular_displacement / dt
-        if not self.angular_use_startup_lag:
-            # Short bursts must not disappear inside a repeatedly reset delay.
-            angular_velocity = estimate_angular_velocity(angular_command)
         self.ekf.predict(linear_velocity, angular_velocity, dt)
         self.last_prediction_time = now
 
@@ -516,9 +507,6 @@ class AprilTagEKFLocalizer(Node):
                         'outside the Mahalanobis validation gate.'
                     )
                     continue
-                feedback = Float64()
-                feedback.data = stamp_seconds
-                self.accepted_tag_publisher.publish(feedback)
             accepted_tags.append(tag_frame)
 
         return accepted_tags
