@@ -233,7 +233,7 @@ class AprilTagEKFLocalizer(Node):
             self.declare_parameter('tag_position_std', 0.08).value
         )
         self.gate_threshold = float(
-            self.declare_parameter('mahalanobis_gate', 200).value
+            self.declare_parameter('mahalanobis_gate', 100).value
         )
         positive_parameters = (
             self.tag_max_age, self.command_timeout, linear_velocity_std,

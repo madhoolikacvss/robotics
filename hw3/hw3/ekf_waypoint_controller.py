@@ -32,7 +32,7 @@ class EKFWaypointController(Node):
             self.declare_parameter('world_frame', 'odom').value
         )
 
-        self.motion = WaypointMotion()
+        self.motion = WaypointMotion(hold_heading_phase=True)
         self.pose_timeout = float(
             self.declare_parameter('pose_timeout', 0.50).value
         )
@@ -78,6 +78,8 @@ class EKFWaypointController(Node):
         self.active_turn_direction = 0.0
         self.turn_settle_started = None
         self.latest_accepted_tag_stamp = None
+        self.heading_observation_started = None
+        self.heading_observation_complete = False
         self.last_control_log_time: Optional[float] = None
         self.desired_command = Twist()
         self.stale_stop_logged = False
@@ -530,12 +532,53 @@ class EKFWaypointController(Node):
         self.stale_stop_logged = False
         robot_x, robot_y, robot_yaw = self.latest_estimated_position
 
+        # Freeze the heading objective throughout the turn and this stopped
+        # window. Position corrections must not redirect an active turn.
+        if self.heading_observation_started is not None:
+            self.publish_stop()
+            self.forward_pulse_started = None
+            self.forward_pause_started = None
+            if now < self.heading_observation_started:
+                self.heading_observation_started = now
+                self.latest_accepted_tag_stamp = None
+            elapsed = now - self.heading_observation_started
+            stamp = self.latest_accepted_tag_stamp
+            camera_ready = (
+                stamp is not None
+                and stamp > self.heading_observation_started + 0.10
+                and 0.0 <= now - stamp <= self.pose_timeout
+            )
+            if elapsed < self.turn_settle_min or (
+                not camera_ready and elapsed < self.turn_settle_timeout
+            ):
+                return
+            self.heading_observation_started = None
+            waypoint = self.motion.waypoints[self.motion.current_waypoint_idx]
+            distance = math.hypot(waypoint[0] - robot_x, waypoint[1] - robot_y)
+            source = 'accepted camera feedback' if camera_ready else 'predicted pose (camera timeout)'
+            if distance > POSITION_TOLERANCE:
+                self.motion.phase = 'position'
+                self.motion.reset_turn()
+                self.heading_observation_complete = False
+                self.final_waypoint_settled = False
+                self.get_logger().info(
+                    f'Stopped waypoint check using {source}: position error='
+                    f'{distance:.3f}m; repositioning on the next cycle.'
+                )
+                return
+            self.heading_observation_complete = True
+            self.get_logger().info(
+                f'Stopped waypoint check using {source}: position error='
+                f'{distance:.3f}m; rechecking final heading.'
+            )
+
         previous_phase = self.motion.phase
         (
             linear, angular, action, dx, dy, heading_error, distance_error,
         ) = self.motion.command_for_pose(robot_x, robot_y, robot_yaw)
         if action != 'reached':
             self.final_waypoint_settled = False
+            self.heading_observation_complete = False
         if previous_phase == 'position' and self.motion.phase == 'heading':
             self.get_logger().info(
                 f'Waypoint {self.motion.current_waypoint_idx}: position '
@@ -575,6 +618,18 @@ class EKFWaypointController(Node):
 
         if action == 'reached':
             if (
+                not self.heading_observation_complete
+                or distance_error > POSITION_TOLERANCE
+            ):
+                self.heading_observation_complete = False
+                self.heading_observation_started = now
+                self.publish_stop()
+                self.get_logger().info(
+                    'Heading aligned; observing while stopped before '
+                    'checking waypoint position.'
+                )
+                return
+            if (
                 self.motion.current_waypoint_idx
                 == len(self.motion.waypoints) - 1
                 and self.final_waypoint_wait_started is None
@@ -600,6 +655,7 @@ class EKFWaypointController(Node):
             )
             self.write_lap_snapshot()
             self.motion.advance_waypoint()
+            self.heading_observation_complete = False
 
             if self.motion.finished:
                 self.write_tag_positions()
