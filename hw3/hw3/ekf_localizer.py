@@ -22,6 +22,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from .waypoint_motion import estimate_angular_displacement
 from .tag_rotation_tracker import TagRotationTracker, FIELDS as ROTATION_FIELDS
+from .turn_accounting import TurnAccounting, FIELDS as TURN_FIELDS
 
 
 def wrap_angle(angle: float) -> float:
@@ -296,6 +297,15 @@ class AprilTagEKFLocalizer(Node):
         )
         self.rotation_writer.writeheader()
         self.rotation_log_file.flush()
+        self.turn_log_path = Path(self.declare_parameter(
+            'turn_diagnostics_log_path', f'turn_diagnostics_{uuid4().hex[:12]}.csv'
+        ).value).expanduser().resolve()
+        self.turn_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.turn_log_file = self.turn_log_path.open('x', newline='', encoding='utf-8')
+        self.turn_writer = csv.DictWriter(self.turn_log_file, fieldnames=TURN_FIELDS)
+        self.turn_writer.writeheader()
+        self.turn_log_file.flush()
+        self.turn_accounting = TurnAccounting(self.write_turn_summary)
         self.last_used_tag_stamp: dict[str, float] = {}
         self.last_log_time: Optional[float] = None
         self.diagnostics_log_path = Path(self.declare_parameter(
@@ -349,12 +359,22 @@ class AprilTagEKFLocalizer(Node):
         self.get_logger().info(
             f'Diagnostic-only camera rotation CSV: {self.rotation_log_path}'
         )
+        self.get_logger().info(f'Per-turn accounting CSV: {self.turn_log_path}')
 
     def destroy_node(self):
         """Flush and close the observation log."""
+        self.turn_accounting.finish(
+            self.last_prediction_time, float(self.ekf.state[2]),
+            float(self.ekf.covariance[2, 2]), 'shutdown_last_filter_state',
+        )
+        self.turn_log_file.close()
         self.diagnostics_log_file.close()
         self.rotation_log_file.close()
         return super().destroy_node()
+
+    def write_turn_summary(self, row):
+        self.turn_writer.writerow(row)
+        self.turn_log_file.flush()
 
     def log_tag_update(
         self, now, stamp, tag, status, observed, pose_before, details=None
@@ -365,6 +385,7 @@ class AprilTagEKFLocalizer(Node):
         and gate rejection leave the robot pose unchanged.
         """
         pose_after = self.ekf.state[:3].copy()
+        self.turn_accounting.update(status, float(pose_before[2]), float(pose_after[2]))
         delta = pose_after - pose_before
         delta[2] = wrap_angle(float(delta[2]))
         self.diagnostics_writer.writerow({
@@ -413,10 +434,15 @@ class AprilTagEKFLocalizer(Node):
     def command_callback(self, msg: Twist):
         """Store the most recently commanded planar velocity."""
         # Integrate the old command up to its replacement, including short bursts.
-        self._predict(self._now_seconds())
+        now = self._now_seconds()
+        self._predict(now)
+        self.turn_accounting.command(
+            now, float(msg.angular.z), float(self.ekf.state[2]),
+            float(self.ekf.covariance[2, 2]),
+        )
         self.linear_velocity = float(msg.linear.x)
         self.angular_velocity = float(msg.angular.z)
-        self.last_command_time = self._now_seconds()
+        self.last_command_time = now
 
     def forward_speed_callback(self, msg: Float64):
         """Receive the mapper's calibrated speed, not a measured velocity."""
@@ -429,6 +455,10 @@ class AprilTagEKFLocalizer(Node):
         """Advance the filter to the current time."""
         dt = now - self.last_prediction_time
         if dt < 0.0:
+            self.turn_accounting.finish(
+                self.last_prediction_time, float(self.ekf.state[2]),
+                float(self.ekf.covariance[2, 2]), 'clock_reset',
+            )
             self.get_logger().warning(
                 'ROS time moved backwards; resetting the EKF time baseline.'
             )
@@ -474,6 +504,11 @@ class AprilTagEKFLocalizer(Node):
             )
         self.forward_speed_missing_logged = missing_speed
         angular_command = self.angular_velocity if command_is_fresh else 0.0
+        if not command_is_fresh:
+            self.turn_accounting.command(
+                now, 0.0, float(self.ekf.state[2]),
+                float(self.ekf.covariance[2, 2]), 'command_timeout_observed',
+            )
         direction = (
             math.copysign(1.0, angular_command)
             if abs(angular_command) > 1e-9 else 0.0
@@ -493,6 +528,10 @@ class AprilTagEKFLocalizer(Node):
                and self.rotation_model_history[1][0] < now - 5.0):
             self.rotation_model_history.popleft()
         self.ekf.predict(linear_velocity, angular_velocity, dt)
+        self.turn_accounting.predict(
+            now, angular_displacement, dt, float(self.ekf.control_noise[1, 1])*dt*dt,
+            float(self.ekf.state[2]), float(self.ekf.covariance[2, 2]),
+        )
         self.last_prediction_time = now
 
     def _observe_visible_tags(self, now: float) -> list[str]:

@@ -21,7 +21,7 @@ from .velocity_mapping import K_OMEGA, K_V
 # Repeated Square
 WAYPOINTS = (
     (0.00, 0.00, 0.0),
-    (0.000, 0.00, math.pi / 2),
+    (0.00, 0.00, math.pi / 2),
     # (1.00, 1.00, math.pi),
     # (0.00, 1.00, -math.pi/2),
     # (0.00, 0.00, 0.0),
