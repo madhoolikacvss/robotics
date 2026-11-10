@@ -2,6 +2,7 @@
 """Estimate the robot's planar pose from velocity commands and AprilTags."""
 
 import csv
+from collections import deque
 import json
 import math
 from pathlib import Path
@@ -20,6 +21,7 @@ from std_msgs.msg import String, Float64
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from .waypoint_motion import estimate_angular_displacement
+from .tag_rotation_tracker import TagRotationTracker, FIELDS as ROTATION_FIELDS
 
 
 def wrap_angle(angle: float) -> float:
@@ -279,6 +281,21 @@ class AprilTagEKFLocalizer(Node):
         self.last_command_time: Optional[float] = None
         now = self._now_seconds()
         self.last_prediction_time = now
+        self.rotation_tracker = TagRotationTracker(self.rotation_base_camera)
+        self.rotation_model_total = 0.0
+        self.rotation_model_history = deque([(now, 0.0)])
+        self.rotation_log_path = Path(self.declare_parameter(
+            'tag_rotation_log_path', f'tag_rotation_diagnostics_{uuid4().hex[:12]}.csv'
+        ).value).expanduser().resolve()
+        self.rotation_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.rotation_log_file = self.rotation_log_path.open(
+            'x', newline='', encoding='utf-8'
+        )
+        self.rotation_writer = csv.DictWriter(
+            self.rotation_log_file, fieldnames=ROTATION_FIELDS
+        )
+        self.rotation_writer.writeheader()
+        self.rotation_log_file.flush()
         self.last_used_tag_stamp: dict[str, float] = {}
         self.last_log_time: Optional[float] = None
         self.diagnostics_log_path = Path(self.declare_parameter(
@@ -329,10 +346,14 @@ class AprilTagEKFLocalizer(Node):
             'publishes /robot_pose_estimate. Tag diagnostics: '
             f'{self.diagnostics_log_path}'
         )
+        self.get_logger().info(
+            f'Diagnostic-only camera rotation CSV: {self.rotation_log_path}'
+        )
 
     def destroy_node(self):
         """Flush and close the observation log."""
         self.diagnostics_log_file.close()
+        self.rotation_log_file.close()
         return super().destroy_node()
 
     def log_tag_update(
@@ -368,6 +389,27 @@ class AprilTagEKFLocalizer(Node):
     def _now_seconds(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def log_tag_rotation(self, now, stamp, tag, quaternion):
+        """Compare visual rotation with command prediction at capture time.
+
+        EKF yaw is labelled processing-time because it includes asynchronous
+        corrections; it is not used as the visual rotation reference.
+        """
+        model = None
+        history = self.rotation_model_history
+        for (t0, a0), (t1, a1) in zip(history, list(history)[1:]):
+            if t0 <= stamp <= t1:
+                model = a0 if t1 == t0 else a0 + (a1-a0)*(stamp-t0)/(t1-t0)
+                break
+        row = self.rotation_tracker.observe(tag, stamp, quaternion, model)
+        self.rotation_writer.writerow({
+            'timestamp_sec': now, 'observation_timestamp_sec': stamp,
+            'age_sec': now-stamp, 'tag': tag,
+            'ekf_yaw_at_processing_rad': float(self.ekf.state[2]),
+            'angular_command_at_processing': self.angular_velocity, **row,
+        })
+        self.rotation_log_file.flush()
+
     def command_callback(self, msg: Twist):
         """Store the most recently commanded planar velocity."""
         # Integrate the old command up to its replacement, including short bursts.
@@ -399,6 +441,10 @@ class AprilTagEKFLocalizer(Node):
             self.angular_command_direction = 0.0
             self.angular_command_elapsed = 0.0
             self.last_used_tag_stamp.clear()
+            self.rotation_tracker.reset()
+            self.rotation_model_total = 0.0
+            self.rotation_model_history.clear()
+            self.rotation_model_history.append((now, 0.0))
             return
         if dt == 0.0:
             return
@@ -441,6 +487,11 @@ class AprilTagEKFLocalizer(Node):
             )
         )
         angular_velocity = angular_displacement / dt
+        self.rotation_model_total += angular_displacement
+        self.rotation_model_history.append((now, self.rotation_model_total))
+        while (len(self.rotation_model_history) > 2
+               and self.rotation_model_history[1][0] < now - 5.0):
+            self.rotation_model_history.popleft()
         self.ekf.predict(linear_velocity, angular_velocity, dt)
         self.last_prediction_time = now
 
@@ -479,6 +530,11 @@ class AprilTagEKFLocalizer(Node):
                 continue
 
             self.last_used_tag_stamp[tag_frame] = stamp_seconds
+            orientation = transform.transform.rotation
+            self.log_tag_rotation(
+                now, stamp_seconds, tag_frame,
+                [orientation.x, orientation.y, orientation.z, orientation.w],
+            )
             translation = transform.transform.translation
             camera_to_tag = np.array([
                 translation.x, translation.y, translation.z,
