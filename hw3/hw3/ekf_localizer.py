@@ -224,7 +224,7 @@ class AprilTagEKFLocalizer(Node):
             self.declare_parameter('linear_velocity_std', 0.20).value
         )
         angular_velocity_std = float(
-            self.declare_parameter('angular_velocity_std', 0.15).value
+            self.declare_parameter('angular_velocity_std', 0.20).value
         )
         tag_position_std = float(
             self.declare_parameter('tag_position_std', 0.08).value
