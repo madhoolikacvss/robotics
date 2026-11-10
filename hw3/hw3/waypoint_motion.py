@@ -21,10 +21,10 @@ from .velocity_mapping import K_OMEGA, K_V
 # Repeated Square
 WAYPOINTS = (
     (0.00, 0.00, 0.0),
-    (0.00, 0.00, math.pi / 2),
-    # (1.00, 1.00, math.pi),
-    # (0.00, 1.00, -math.pi/2),
-    # (0.00, 0.00, 0.0),
+    (1.00, 0.00, math.pi / 2),
+    (1.00, 1.00, math.pi),
+    (0.00, 1.00, -math.pi/2),
+    (0.00, 0.00, 0.0),
     # (1.000, 0.00, math.pi / 2),
     # (1.00, 1.00, math.pi),
     # (0.00, 1.00, -math.pi/2),
@@ -49,7 +49,7 @@ WAYPOINTS = (
 CONTROL_PERIOD = 0.01
 K_DISTANCE = 0.8
 POSITION_TOLERANCE = 0.08
-HEADING_TOLERANCE = 0.13
+HEADING_TOLERANCE = 0.08
 # Direction-specific measured turn rates at the controller's K_OMEGA.
 # Low battery constants
 # ANGULAR_RATE_CCW = 1.6 # 1.86

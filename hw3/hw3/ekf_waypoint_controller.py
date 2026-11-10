@@ -89,7 +89,7 @@ class EKFWaypointController(Node):
         self.latest_tag_positions: dict[str, tuple[float, ...]] = {}
         self.latest_map_timestamp: Optional[float] = None
         self.lap_end_indices = list(self.declare_parameter(
-            'lap_end_waypoint_indices', [1]
+            'lap_end_waypoint_indices', [4]
         ).value)
         if (
             self.lap_end_indices != sorted(set(self.lap_end_indices))
