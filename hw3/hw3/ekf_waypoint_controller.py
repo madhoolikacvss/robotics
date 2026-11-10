@@ -15,7 +15,7 @@ import tf_transformations
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped, Twist
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 
 from .waypoint_motion import (
     CONTROL_PERIOD,
@@ -65,6 +65,20 @@ class EKFWaypointController(Node):
             raise ValueError('Forward pulse parameters must be finite and positive.')
         self.forward_pulse_started: Optional[float] = None
         self.forward_pause_started: Optional[float] = None
+        self.angular_burst_duration = float(self.declare_parameter(
+            'angular_burst_duration', 0.10
+        ).value)
+        self.angular_observation_pause = float(self.declare_parameter(
+            'angular_observation_pause', 0.40
+        ).value)
+        if any(not math.isfinite(v) or v <= 0.0 for v in (
+            self.angular_burst_duration, self.angular_observation_pause,
+        )):
+            raise ValueError('Angular burst parameters must be finite and positive.')
+        self.angular_burst_started = None
+        self.angular_burst_direction = 0.0
+        self.angular_pause_started = None
+        self.latest_accepted_tag_stamp = None
         self.last_control_log_time: Optional[float] = None
         self.desired_command = Twist()
         self.stale_stop_logged = False
@@ -91,6 +105,10 @@ class EKFWaypointController(Node):
         self.snapshot_id = 0
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.create_subscription(
+            Float64, '/accepted_tag_observation_stamp',
+            self.accepted_tag_callback, 10,
+        )
         self.create_subscription(
             PoseStamped, '/robot_pose_estimate', self.pose_callback, 10
         )
@@ -430,6 +448,40 @@ class EKFWaypointController(Node):
             return 0.0, 0.0, 'observation_pause'
         return linear, angular, action
 
+    def accepted_tag_callback(self, msg):
+        if math.isfinite(msg.data):
+            self.latest_accepted_tag_stamp = float(msg.data)
+
+    def shape_angular_burst(self, now, linear, angular, action):
+        """Stop between turn bursts until a post-stop known-tag update arrives."""
+        if self.angular_pause_started is not None:
+            if now < self.angular_pause_started:
+                self.angular_pause_started = now
+                self.latest_accepted_tag_stamp = None
+            stamp = self.latest_accepted_tag_stamp
+            if (now - self.angular_pause_started < self.angular_observation_pause
+                    or stamp is None
+                    or stamp <= self.angular_pause_started + 0.10
+                    or not 0.0 <= now - stamp <= self.pose_timeout):
+                return 0.0, 0.0, 'angular_observation_pause'
+            self.angular_pause_started = None
+
+        if self.angular_burst_started is not None:
+            if (now < self.angular_burst_started
+                    or now - self.angular_burst_started >= self.angular_burst_duration
+                    or angular * self.angular_burst_direction <= 0.0
+                    or linear != 0.0):
+                self.angular_burst_started = None
+                self.angular_pause_started = now
+                self.get_logger().info(
+                    'Turn burst stopped; waiting for fresh accepted camera feedback.'
+                )
+                return 0.0, 0.0, 'angular_observation_pause'
+        elif angular != 0.0:
+            self.angular_burst_started = now
+            self.angular_burst_direction = math.copysign(1.0, angular)
+        return linear, angular, action
+
     def control_loop(self):
         now = self._now_seconds()
 
@@ -444,6 +496,9 @@ class EKFWaypointController(Node):
             or now - self.last_pose_received_time > self.pose_timeout
         ):
             self.forward_pulse_started = None
+            if self.angular_burst_started is not None:
+                self.angular_burst_started = None
+                self.angular_pause_started = now
             self.publish_stop()
             if not self.stale_stop_logged:
                 self.get_logger().warning(
@@ -484,6 +539,9 @@ class EKFWaypointController(Node):
         )
         linear, angular, action = self.shape_forward_approach(
             now, linear, angular, action, distance_error
+        )
+        linear, angular, action = self.shape_angular_burst(
+            now, linear, angular, action
         )
         cmd = Twist()
         cmd.linear.x = linear
