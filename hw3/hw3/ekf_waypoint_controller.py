@@ -15,7 +15,7 @@ import tf_transformations
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped, Twist
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 
 from .waypoint_motion import (
     CONTROL_PERIOD,
@@ -65,6 +65,19 @@ class EKFWaypointController(Node):
             raise ValueError('Forward pulse parameters must be finite and positive.')
         self.forward_pulse_started: Optional[float] = None
         self.forward_pause_started: Optional[float] = None
+        self.turn_settle_min = float(self.declare_parameter(
+            'turn_settle_min', 0.60
+        ).value)
+        self.turn_settle_timeout = float(self.declare_parameter(
+            'turn_settle_timeout', 1.50
+        ).value)
+        if (not math.isfinite(self.turn_settle_min)
+                or not math.isfinite(self.turn_settle_timeout)
+                or not 0.0 < self.turn_settle_min <= self.turn_settle_timeout):
+            raise ValueError('Require 0 < turn_settle_min <= turn_settle_timeout.')
+        self.active_turn_direction = 0.0
+        self.turn_settle_started = None
+        self.latest_accepted_tag_stamp = None
         self.last_control_log_time: Optional[float] = None
         self.desired_command = Twist()
         self.stale_stop_logged = False
@@ -91,6 +104,10 @@ class EKFWaypointController(Node):
         self.snapshot_id = 0
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.create_subscription(
+            Float64, '/accepted_tag_observation_stamp',
+            self.accepted_tag_callback, 10,
+        )
         self.create_subscription(
             PoseStamped, '/robot_pose_estimate', self.pose_callback, 10
         )
@@ -430,6 +447,50 @@ class EKFWaypointController(Node):
             return 0.0, 0.0, 'observation_pause'
         return linear, angular, action
 
+    def accepted_tag_callback(self, msg):
+        """Track capture time of observations that actually corrected the EKF."""
+        if math.isfinite(msg.data):
+            self.latest_accepted_tag_stamp = float(msg.data)
+
+    def shape_turn_settle(self, now, linear, angular, action):
+        """Keep turns continuous, but settle before driving or reversing."""
+        if self.turn_settle_started is not None:
+            # Time spent settling must not consume a forward drive pulse.
+            self.forward_pulse_started = None
+            if now < self.turn_settle_started:
+                self.turn_settle_started = now
+                self.latest_accepted_tag_stamp = None
+            elapsed = now - self.turn_settle_started
+            stamp = self.latest_accepted_tag_stamp
+            camera_ready = (
+                stamp is not None
+                and stamp > self.turn_settle_started + 0.10
+                and 0.0 <= now - stamp <= self.pose_timeout
+            )
+            if elapsed < self.turn_settle_min or (
+                not camera_ready and elapsed < self.turn_settle_timeout
+            ):
+                return 0.0, 0.0, 'turn_settle'
+            self.turn_settle_started = None
+            self.get_logger().info(
+                'Turn settle complete: ' + (
+                    'fresh accepted tag feedback; reassessing pose.' if camera_ready
+                    else 'camera wait timed out; reassessing predicted pose.'
+                )
+            )
+
+        direction = math.copysign(1.0, angular) if abs(angular) > 1e-6 else 0.0
+        if self.active_turn_direction and (
+            direction != self.active_turn_direction or abs(linear) > 1e-6
+        ):
+            self.active_turn_direction = 0.0
+            self.turn_settle_started = now
+            self.forward_pulse_started = None
+            self.get_logger().info('Turn stopped; settling before the next movement.')
+            return 0.0, 0.0, 'turn_settle'
+        self.active_turn_direction = direction
+        return linear, angular, action
+
     def control_loop(self):
         now = self._now_seconds()
 
@@ -444,6 +505,9 @@ class EKFWaypointController(Node):
             or now - self.last_pose_received_time > self.pose_timeout
         ):
             self.forward_pulse_started = None
+            if self.active_turn_direction:
+                self.active_turn_direction = 0.0
+                self.turn_settle_started = now
             self.publish_stop()
             if not self.stale_stop_logged:
                 self.get_logger().warning(
@@ -484,6 +548,9 @@ class EKFWaypointController(Node):
         )
         linear, angular, action = self.shape_forward_approach(
             now, linear, angular, action, distance_error
+        )
+        linear, angular, action = self.shape_turn_settle(
+            now, linear, angular, action
         )
         cmd = Twist()
         cmd.linear.x = linear

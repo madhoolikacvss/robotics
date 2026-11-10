@@ -307,6 +307,9 @@ class AprilTagEKFLocalizer(Node):
         self.pose_publisher = self.create_publisher(
             PoseStamped, '/robot_pose_estimate', 10
         )
+        self.accepted_tag_publisher = self.create_publisher(
+            Float64, '/accepted_tag_observation_stamp', 10
+        )
         self.tag_positions_publisher = self.create_publisher(
             String, '/tag_positions', 10
         )
@@ -507,6 +510,12 @@ class AprilTagEKFLocalizer(Node):
                         'outside the Mahalanobis validation gate.'
                     )
                     continue
+                # Only known, accepted landmarks count as correction feedback.
+                # Use image capture time so delayed pre-stop frames cannot
+                # release the controller's post-turn settling wait.
+                feedback = Float64()
+                feedback.data = stamp_seconds
+                self.accepted_tag_publisher.publish(feedback)
             accepted_tags.append(tag_frame)
 
         return accepted_tags
