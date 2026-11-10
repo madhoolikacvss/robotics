@@ -48,8 +48,8 @@ WAYPOINTS = (
 
 CONTROL_PERIOD = 0.01
 K_DISTANCE = 0.8
-POSITION_TOLERANCE = 0.05
-HEADING_TOLERANCE = 0.10
+POSITION_TOLERANCE = 0.08
+HEADING_TOLERANCE = 0.08
 # Direction-specific measured turn rates at the controller's K_OMEGA.
 # Low battery constants
 # ANGULAR_RATE_CCW = 1.6 # 1.86
