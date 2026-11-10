@@ -221,7 +221,7 @@ class AprilTagEKFLocalizer(Node):
             self.declare_parameter('initial_yaw_std', 0.0).value
         )
         linear_velocity_std = float(
-            self.declare_parameter('linear_velocity_std', 0.05).value
+            self.declare_parameter('linear_velocity_std', 0.15).value
         )
         angular_velocity_std = float(
             self.declare_parameter('angular_velocity_std', 0.10).value
@@ -295,6 +295,10 @@ class AprilTagEKFLocalizer(Node):
                 'frame', 'tag', 'status', 'observed_x', 'observed_y',
                 'predicted_x', 'predicted_y', 'residual_x', 'residual_y',
                 'mahalanobis_squared', 'gate_threshold',
+                'pose_frame', 'pose_before_x', 'pose_before_y',
+                'pose_before_yaw_rad', 'pose_after_x', 'pose_after_y',
+                'pose_after_yaw_rad', 'pose_delta_x', 'pose_delta_y',
+                'pose_delta_yaw_rad',
             ]
         )
         self.diagnostics_writer.writeheader()
@@ -328,14 +332,33 @@ class AprilTagEKFLocalizer(Node):
         self.diagnostics_log_file.close()
         return super().destroy_node()
 
-    def log_tag_update(self, now, stamp, tag, status, observed, details=None):
-        """Log each processed observation; new landmarks have no residual."""
+    def log_tag_update(
+        self, now, stamp, tag, status, observed, pose_before, details=None
+    ):
+        """Log each tag's immediate robot-pose correction in the world frame.
+
+        Observation/residual coordinates remain in base_link. Initialization
+        and gate rejection leave the robot pose unchanged.
+        """
+        pose_after = self.ekf.state[:3].copy()
+        delta = pose_after - pose_before
+        delta[2] = wrap_angle(float(delta[2]))
         self.diagnostics_writer.writerow({
             'timestamp_sec': now, 'observation_timestamp_sec': stamp,
             'age_sec': now - stamp, 'frame': 'base_link', 'tag': tag,
             'status': status, 'observed_x': float(observed[0]),
             'observed_y': float(observed[1]),
             'gate_threshold': self.gate_threshold, **(details or {}),
+            'pose_frame': self.world_frame,
+            'pose_before_x': float(pose_before[0]),
+            'pose_before_y': float(pose_before[1]),
+            'pose_before_yaw_rad': float(pose_before[2]),
+            'pose_after_x': float(pose_after[0]),
+            'pose_after_y': float(pose_after[1]),
+            'pose_after_yaw_rad': float(pose_after[2]),
+            'pose_delta_x': float(delta[0]),
+            'pose_delta_y': float(delta[1]),
+            'pose_delta_yaw_rad': float(delta[2]),
         })
         self.diagnostics_log_file.flush()
 
@@ -459,11 +482,12 @@ class AprilTagEKFLocalizer(Node):
                 self.translation_base_camera
                 + self.rotation_base_camera @ camera_to_tag
             )
+            pose_before = self.ekf.state[:3].copy()
             if tag_frame not in self.ekf.landmark_indices:
                 self.ekf.add_landmark(tag_frame, tag_position_base[:2])
                 self.log_tag_update(
                     now, stamp_seconds, tag_frame, 'initialized',
-                    tag_position_base[:2],
+                    tag_position_base[:2], pose_before,
                 )
             else:
                 mahalanobis_squared = self.ekf.update(
@@ -472,7 +496,8 @@ class AprilTagEKFLocalizer(Node):
                 self.log_tag_update(
                     now, stamp_seconds, tag_frame,
                     'rejected_gate' if mahalanobis_squared is None else 'accepted',
-                    tag_position_base[:2], self.ekf.last_update_diagnostics,
+                    tag_position_base[:2], pose_before,
+                    self.ekf.last_update_diagnostics,
                 )
                 if mahalanobis_squared is None:
                     self.get_logger().warning(
