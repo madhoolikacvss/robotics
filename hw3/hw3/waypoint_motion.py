@@ -13,23 +13,23 @@ from .velocity_mapping import K_OMEGA, K_V
 #     (0.00, 0.00, 0.0),
 # )
 
-# WAYPOINTS = (
-#     (0.0, 0.0, 0.0),
-#     (0.0, 0.0, math.pi/2),  # Turn left 22.5°
-#     (0.0, 0.0, 0.0),         # Turn right back to start
-# )
-# Repeated Square
 WAYPOINTS = (
-    (0.00, 0.00, 0.0),
-    (1.000, 0.00, math.pi / 2),
-    (1.00, 1.00, math.pi),
-    (0.00, 1.00, -math.pi/2),
-    (0.00, 0.00, 0.0),
-    (1.000, 0.00, math.pi / 2),
-    (1.00, 1.00, math.pi),
-    (0.00, 1.00, -math.pi/2),
-    (0.00, 0.00, 0.0),
+    (0.0, 0.0, 0.0),
+    (0.0, 0.0, math.pi/2),  # Turn left 90
+    #(0.0, 0.0, 0.0),         # Turn right back to start
 )
+# Repeated Square
+# WAYPOINTS = (
+#     (0.00, 0.00, 0.0),
+#     (1.000, 0.00, math.pi / 2),
+#     (1.00, 1.00, math.pi),
+#     (0.00, 1.00, -math.pi/2),
+#     (0.00, 0.00, 0.0),
+#     (1.000, 0.00, math.pi / 2),
+#     (1.00, 1.00, math.pi),
+#     (0.00, 1.00, -math.pi/2),
+#     (0.00, 0.00, 0.0),
+# )
 
 
 # # Octogon
@@ -64,10 +64,10 @@ HEADING_TOLERANCE = 0.13
 # ANGULAR_ANGLE_OFFSET_CW = -0.56
 
 # Testing
-ANGULAR_RATE_CCW = 3.2 # 2.07
-ANGULAR_RATE_CW = 3.4 #2.16
-ANGULAR_ANGLE_OFFSET_CCW = -0.22 # -0.59
-ANGULAR_ANGLE_OFFSET_CW = -0.3
+ANGULAR_RATE_CCW = 2.28 #3.2 # 2.07
+ANGULAR_RATE_CW = 2.31 #3.4 #2.16
+ANGULAR_ANGLE_OFFSET_CCW = 0.0 #-0.22 # -0.59
+ANGULAR_ANGLE_OFFSET_CW = 0.0 #-0.3
 
 
 def wrap_angle(angle: float) -> float:
