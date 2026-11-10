@@ -16,7 +16,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from .waypoint_motion import estimate_angular_displacement
@@ -268,6 +268,11 @@ class AprilTagEKFLocalizer(Node):
         self.translation_base_camera = camera_xyz
 
         self.linear_velocity = 0.0
+        self.estimated_forward_speed = 0.0
+        self.last_forward_speed_time: Optional[float] = None
+        # Match motor_control's command watchdog (seconds).
+        self.forward_speed_timeout = 0.15
+        self.forward_speed_missing_logged = False
         self.angular_velocity = 0.0
         self.angular_command_direction = 0.0
         self.angular_command_elapsed = 0.0
@@ -304,12 +309,16 @@ class AprilTagEKFLocalizer(Node):
         self.create_subscription(
             Twist, '/cmd_vel', self.command_callback, 10
         )
+        self.create_subscription(
+            Float64, '/estimated_forward_speed', self.forward_speed_callback, 10
+        )
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.timer = self.create_timer(0.02, self.filter_step)
 
         self.get_logger().info(
-            'AprilTag EKF localizer started; subscribes to /cmd_vel and '
+            'AprilTag EKF localizer started; uses /estimated_forward_speed '
+            'for translation and /cmd_vel for calibrated turns; '
             'publishes /robot_pose_estimate. Tag diagnostics: '
             f'{self.diagnostics_log_path}'
         )
@@ -339,6 +348,13 @@ class AprilTagEKFLocalizer(Node):
         self.angular_velocity = float(msg.angular.z)
         self.last_command_time = self._now_seconds()
 
+    def forward_speed_callback(self, msg: Float64):
+        """Receive the mapper's calibrated speed, not a measured velocity."""
+        if not math.isfinite(msg.data):
+            return
+        self.estimated_forward_speed = float(msg.data)
+        self.last_forward_speed_time = self._now_seconds()
+
     def _predict(self, now: float):
         """Advance the filter to the current time."""
         dt = now - self.last_prediction_time
@@ -348,6 +364,8 @@ class AprilTagEKFLocalizer(Node):
             )
             self.last_prediction_time = now
             self.last_command_time = None
+            self.last_forward_speed_time = None
+            self.estimated_forward_speed = 0.0
             self.linear_velocity = 0.0
             self.angular_velocity = 0.0
             self.angular_command_direction = 0.0
@@ -361,7 +379,26 @@ class AprilTagEKFLocalizer(Node):
             self.last_command_time is not None
             and now - self.last_command_time <= self.command_timeout
         )
-        linear_velocity = self.linear_velocity if command_is_fresh else 0.0
+        speed_is_fresh = (
+            self.last_forward_speed_time is not None
+            and 0.0 <= now - self.last_forward_speed_time
+            <= self.forward_speed_timeout
+        )
+        linear_velocity = (
+            self.estimated_forward_speed
+            if speed_is_fresh and command_is_fresh
+            and abs(self.linear_velocity) > 1e-9 else 0.0
+        )
+        missing_speed = (
+            command_is_fresh and abs(self.linear_velocity) > 1e-9
+            and not speed_is_fresh
+        )
+        if missing_speed and not self.forward_speed_missing_logged:
+            self.get_logger().warning(
+                'No recent /estimated_forward_speed; translation prediction '
+                'is zero. Start the updated hw3 velocity_mapping node.'
+            )
+        self.forward_speed_missing_logged = missing_speed
         angular_command = self.angular_velocity if command_is_fresh else 0.0
         direction = (
             math.copysign(1.0, angular_command)

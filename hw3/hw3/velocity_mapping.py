@@ -2,11 +2,13 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Float64
 import numpy as np
 
 K_V = 0.12
 K_OMEGA = 0.35
+# HW1 calibration.json: speed = k_v * average wheel command.
+CALIBRATED_LINEAR_GAIN = 0.6666
 # MIN_FORWARD_VELOCITY = 0.22
 
 
@@ -29,6 +31,9 @@ class VelocityToMotorNode(Node):
 
         self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
         self.motor_pub = self.create_publisher(Float32MultiArray, '/motor_commands', 10)
+        self.speed_pub = self.create_publisher(
+            Float64, '/estimated_forward_speed', 10
+        )
         
     def _wheel_velocities(self, linear: float, angular: float) -> tuple[float, float]:
         half_b = 0.5 * self.wheel_base
@@ -73,6 +78,12 @@ class VelocityToMotorNode(Node):
         out = Float32MultiArray()
         out.data = [left_cmd, right_cmd]
         self.motor_pub.publish(out)
+        # Match motor_control's final clipping without changing its inputs.
+        # This is a calibrated prediction, not measured wheel odometry.
+        applied = np.clip([left_cmd, right_cmd], -0.5, 0.5)
+        speed = Float64()
+        speed.data = float(CALIBRATED_LINEAR_GAIN * np.mean(applied))
+        self.speed_pub.publish(speed)
 
 
 def main(args=None):
