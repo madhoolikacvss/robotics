@@ -108,9 +108,10 @@ def estimate_angular_displacement(
 class WaypointMotion:
     """Common waypoint state machine and turn shaping for both controllers."""
 
-    def __init__(self, hold_heading_phase=False):
-        # The EKF controller explicitly rechecks position after stopping.
+    def __init__(self, hold_heading_phase=False, linear_approach_only=False):
+        # EKF square mode uses one-way approach -> heading -> next waypoint.
         self.hold_heading_phase = hold_heading_phase
+        self.linear_approach_only = linear_approach_only
         self.waypoints = WAYPOINTS
         self.current_waypoint_idx = 0
         self.phase = 'position'
@@ -142,7 +143,7 @@ class WaypointMotion:
         if self.phase == 'position':
             desired_heading = math.atan2(dy, dx)
             heading_error = wrap_angle(desired_heading - robot_yaw)
-            if abs(heading_error) > HEADING_TOLERANCE:
+            if not self.linear_approach_only and abs(heading_error) > HEADING_TOLERANCE:
                 linear = 0.0
                 angular = math.copysign(K_OMEGA, heading_error)
                 action = 'turn'

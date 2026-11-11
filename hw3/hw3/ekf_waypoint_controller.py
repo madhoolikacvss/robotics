@@ -32,7 +32,7 @@ class EKFWaypointController(Node):
             self.declare_parameter('world_frame', 'odom').value
         )
 
-        self.motion = WaypointMotion(hold_heading_phase=True)
+        self.motion = WaypointMotion(hold_heading_phase=True, linear_approach_only=True)
         self.pose_timeout = float(
             self.declare_parameter('pose_timeout', 0.50).value
         )
@@ -81,9 +81,7 @@ class EKFWaypointController(Node):
         self.latest_accepted_tag_received_time = None
         self.heading_observation_started = None
         self.heading_observation_complete = False
-        self.reposition_observation_stamp = None
-        self.reposition_observation_count = 0
-        self.reposition_wait_logged = False
+        self.heading_feedback_wait_logged = False
         self.last_control_log_time: Optional[float] = None
         self.desired_command = Twist()
         self.stale_stop_logged = False
@@ -540,8 +538,8 @@ class EKFWaypointController(Node):
         self.stale_stop_logged = False
         robot_x, robot_y, robot_yaw = self.latest_estimated_position
 
-        # Freeze the heading objective throughout the turn and this stopped
-        # window. Position corrections must not redirect an active turn.
+        # Once arrival is latched, only heading corrections are allowed.
+        # A timed-out camera wait never authorizes departure.
         if self.heading_observation_started is not None:
             self.publish_stop()
             self.forward_pulse_started = None
@@ -549,71 +547,29 @@ class EKFWaypointController(Node):
             if now < self.heading_observation_started:
                 self.heading_observation_started = now
                 self.latest_accepted_tag_stamp = None
-                self.reposition_observation_stamp = None
-                self.reposition_observation_count = 0
-                self.reposition_wait_logged = False
+                self.heading_feedback_wait_logged = False
             elapsed = now - self.heading_observation_started
             stamp = self.latest_accepted_tag_stamp
             camera_ready = (
                 stamp is not None
                 and stamp > self.heading_observation_started + 0.10
                 and 0.0 <= now - stamp <= self.pose_timeout
-            )
-            waypoint = self.motion.waypoints[self.motion.current_waypoint_idx]
-            distance = math.hypot(waypoint[0] - robot_x, waypoint[1] - robot_y)
-            # Count distinct camera captures, not repeated timer ticks or
-            # multiple tags from the same image. Wait for a pose callback
-            # after the notification so an older cached pose is not counted.
-            if (
-                self.reposition_observation_stamp is not None
-                and now - self.reposition_observation_stamp > self.pose_timeout
-            ):
-                self.reposition_observation_count = 0
-            if camera_ready and (
-                self.reposition_observation_stamp is None
-                or stamp > self.reposition_observation_stamp
-            ) and (
-                self.latest_accepted_tag_received_time is not None
+                and self.latest_accepted_tag_received_time is not None
                 and self.last_pose_received_time > self.latest_accepted_tag_received_time
-            ):
-                self.reposition_observation_stamp = stamp
-                if distance > POSITION_TOLERANCE:
-                    self.reposition_observation_count += 1
-                else:
-                    self.reposition_observation_count = 0
-            if distance <= POSITION_TOLERANCE:
-                self.reposition_observation_count = 0
-            if elapsed < self.turn_settle_min or (
-                not camera_ready and elapsed < self.turn_settle_timeout
-            ):
-                return
-            source = 'accepted camera feedback' if camera_ready else 'predicted pose (camera timeout)'
-            if distance > POSITION_TOLERANCE:
-                if not camera_ready or self.reposition_observation_count < 3:
-                    if elapsed >= self.turn_settle_timeout and not self.reposition_wait_logged:
-                        self.get_logger().info(
-                            'Stopped waypoint check: waiting for 3 consecutive '
-                            'fresh observations outside position tolerance; '
-                            'remaining stopped.'
-                        )
-                        self.reposition_wait_logged = True
-                    return
-                self.heading_observation_started = None
-                self.motion.phase = 'position'
-                self.motion.reset_turn()
-                self.heading_observation_complete = False
-                self.final_waypoint_settled = False
-                self.get_logger().info(
-                    f'Stopped waypoint check using {source}: position error='
-                    f'{distance:.3f}m across 3 consecutive fresh observations; '
-                    'repositioning on the next cycle.'
-                )
+            )
+            if elapsed < self.turn_settle_min or not camera_ready:
+                if elapsed >= self.turn_settle_timeout and not self.heading_feedback_wait_logged:
+                    self.get_logger().warning(
+                        'Turn unverified: waiting for accepted post-turn landmark '
+                        'feedback; remaining stopped.'
+                    )
+                    self.heading_feedback_wait_logged = True
                 return
             self.heading_observation_started = None
             self.heading_observation_complete = True
             self.get_logger().info(
-                f'Stopped waypoint check using {source}: position error='
-                f'{distance:.3f}m; rechecking final heading.'
+                'Accepted post-turn landmark feedback received; '
+                'checking heading before advancing.'
             )
 
         previous_phase = self.motion.phase
@@ -629,6 +585,10 @@ class EKFWaypointController(Node):
                 f'tolerance reached (error={distance_error:.3f}m); '
                 'aligning heading.'
             )
+            self.forward_pulse_started = None
+            self.forward_pause_started = None
+            self.publish_stop()
+            return
 
         linear, angular = self.motion.shape_turn(
             linear, angular, heading_error
@@ -661,19 +621,14 @@ class EKFWaypointController(Node):
             self.last_control_log_time = now
 
         if action == 'reached':
-            if (
-                not self.heading_observation_complete
-                or distance_error > POSITION_TOLERANCE
-            ):
+            if not self.heading_observation_complete:
                 self.heading_observation_complete = False
                 self.heading_observation_started = now
-                self.reposition_observation_stamp = None
-                self.reposition_observation_count = 0
-                self.reposition_wait_logged = False
+                self.heading_feedback_wait_logged = False
                 self.publish_stop()
                 self.get_logger().info(
                     'Heading aligned; observing while stopped before '
-                    'checking waypoint position.'
+                    'verifying heading with accepted landmark feedback.'
                 )
                 return
             if (
