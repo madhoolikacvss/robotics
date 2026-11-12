@@ -36,6 +36,16 @@ class EKFWaypointController(Node):
         )
         if self.pose_timeout <= 0.0:
             raise ValueError('pose_timeout must be positive.')
+        self.turn_chunk_duration = float(
+            self.declare_parameter('turn_chunk_duration', 0.15).value
+        )
+        if self.turn_chunk_duration <= 0.0:
+            raise ValueError('turn_chunk_duration must be positive.')
+        self.turn_pause_duration = float(
+            self.declare_parameter('turn_pause_duration', 0.30).value
+        )
+        if self.turn_pause_duration < 0.0:
+            raise ValueError('turn_pause_duration must be non-negative.')
         self.final_waypoint_settle_time = float(
             self.declare_parameter(
                 'final_waypoint_settle_time', 1.0
@@ -50,6 +60,10 @@ class EKFWaypointController(Node):
         self.last_control_log_time: Optional[float] = None
         self.desired_command = Twist()
         self.stale_stop_logged = False
+        self.turn_chunk_end_time: Optional[float] = None
+        self.turn_chunk_waiting_for_pose = False
+        self.turn_chunk_resume_time = 0.0
+        self.turn_chunk_pose_count = 0
         self.final_waypoint_wait_started: Optional[float] = None
         self.final_waypoint_settled = False
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
@@ -131,7 +145,9 @@ class EKFWaypointController(Node):
         self.get_logger().info(
             'EKF waypoint controller started: '
             f'position tolerance={POSITION_TOLERANCE:.2f}m, '
-            f'pose timeout={self.pose_timeout:.2f}s. '
+            f'pose timeout={self.pose_timeout:.2f}s, '
+            f'turn pulses={self.turn_chunk_duration:.2f}s with '
+            f'{self.turn_pause_duration:.2f}s pauses. '
             f'Using /robot_pose_estimate and writing positions to '
             f'{self.position_log_path} and '
             f'waypoint results to {self.waypoint_log_path}; tag positions '
@@ -191,6 +207,9 @@ class EKFWaypointController(Node):
 
     def publish_stop(self):
         self.desired_command = Twist()
+        self.turn_chunk_end_time = None
+        self.turn_chunk_waiting_for_pose = False
+        self.turn_chunk_resume_time = 0.0
         self.motion.reset_turn()
         self.cmd_pub.publish(Twist())
 
@@ -333,6 +352,26 @@ class EKFWaypointController(Node):
                 self.stale_stop_logged = True
             return
 
+        if self.turn_chunk_end_time is not None:
+            if now < self.turn_chunk_end_time:
+                return
+
+            self.turn_chunk_end_time = None
+            self.turn_chunk_waiting_for_pose = True
+            self.turn_chunk_resume_time = now + self.turn_pause_duration
+            self.turn_chunk_pose_count = self.pose_update_count
+            self.desired_command = Twist()
+            self.cmd_pub.publish(Twist())
+            return
+
+        if self.turn_chunk_waiting_for_pose:
+            if (
+                now < self.turn_chunk_resume_time
+                or self.pose_update_count <= self.turn_chunk_pose_count
+            ):
+                return
+            self.turn_chunk_waiting_for_pose = False
+
         if self.last_controlled_pose_count == self.pose_update_count:
             return
         self.last_controlled_pose_count = self.pose_update_count
@@ -369,6 +408,8 @@ class EKFWaypointController(Node):
         cmd.angular.z = angular
         self.desired_command = cmd
         self.cmd_pub.publish(cmd)
+        if abs(angular) > 1e-6:
+            self.turn_chunk_end_time = now + self.turn_chunk_duration
 
         if (
             self.last_control_log_time is None

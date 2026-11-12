@@ -30,13 +30,13 @@ from .velocity_mapping import K_OMEGA, K_V
 # )
 
 # Square (scaled to 1.626 m)
-WAYPOINTS = (
-    (0.00, 0.00, 0.0),
-    (1.626, 0.00, math.pi / 2),
-    (1.626, 1.626, math.pi),
-    (0.00, 1.626, -math.pi/2),
-    (0.00, 0.00, 0.0),
-)
+# WAYPOINTS = (
+#     (0.00, 0.00, 0.0),
+#     (1.626, 0.00, math.pi / 2),
+#     (1.626, 1.626, math.pi),
+#     (0.00, 1.626, -math.pi/2),
+#     (0.00, 0.00, 0.0),
+# )
 
 # Repeated Square (scaled to 1.626 m)
 # WAYPOINTS = (
@@ -66,29 +66,27 @@ WAYPOINTS = (
 # )
 
 # Repeated Octogon (scaled to 1.626 m)
-# WAYPOINTS = (
-#     (0.00, 0.00, 0.0),
-#     (0.476244, 0.000000, 0.0),
-#     (1.149756, 0.000000, 0.0),
-#     (1.626000, 0.476244, math.pi / 4),
-#     (1.626000, 1.149756, math.pi / 2),
-#     (1.149756, 1.626000, 3 * math.pi / 4),
-#     (0.476244, 1.626000, math.pi),
-#     (0.000000, 1.149756, -3 * math.pi / 4),
-#     (0.000000, 0.476244, -math.pi / 2),
-#     (0.476244, 0.000000, -math.pi / 4),
-#     (0.00, 0.00, 0.0),
-#     (0.476244, 0.000000, 0.0),
-#     (1.149756, 0.000000, 0.0),
-#     (1.626000, 0.476244, math.pi / 4),
-#     (1.626000, 1.149756, math.pi / 2),
-#     (1.149756, 1.626000, 3 * math.pi / 4),
-#     (0.476244, 1.626000, math.pi),
-#     (0.000000, 1.149756, -3 * math.pi / 4),
-#     (0.000000, 0.476244, -math.pi / 2),
-#     (0.476244, 0.000000, -math.pi / 4),
-#     (0.00, 0.00, 0.0),
-# )
+WAYPOINTS = (
+    (0.00, 0.00, 0.0),
+    (0.476244, 0.000000, 0.0),
+    (1.149756, 0.000000, 0.0),
+    (1.626000, 0.476244, math.pi / 4),
+    (1.626000, 1.149756, math.pi / 2),
+    (1.149756, 1.626000, 3 * math.pi / 4),
+    (0.476244, 1.626000, math.pi),
+    (0.000000, 1.149756, -3 * math.pi / 4),
+    (0.000000, 0.476244, -math.pi / 2),
+    (0.476244, 0.000000, -math.pi / 4),
+    (0.476244, 0.000000, 0.0),
+    (1.149756, 0.000000, 0.0),
+    (1.626000, 0.476244, math.pi / 4),
+    (1.626000, 1.149756, math.pi / 2),
+    (1.149756, 1.626000, 3 * math.pi / 4),
+    (0.476244, 1.626000, math.pi),
+    (0.000000, 1.149756, -3 * math.pi / 4),
+    (0.000000, 0.476244, -math.pi / 2),
+    (0.476244, 0.000000, -math.pi / 4),
+)
 
 
 
@@ -114,8 +112,8 @@ WAYPOINTS = (
 CONTROL_PERIOD = 0.01
 K_DISTANCE = 0.8
 POSITION_TOLERANCE = 0.08
-HEADING_TOLERANCE = 0.13
-LINEAR_VELOCITY_SCALE = 0.87
+HEADING_TOLERANCE = 0.25
+LINEAR_VELOCITY_SCALE = 0.98
 # Direction-specific measured turn rates at the controller's K_OMEGA.
 # Low battery constants
 # ANGULAR_RATE_CCW = 1.6 # 1.86
@@ -134,8 +132,8 @@ LINEAR_VELOCITY_SCALE = 0.87
 # ANGULAR_RATE_CW = 3.4 #2.16
 # ANGULAR_ANGLE_OFFSET_CCW = -0.22 # -0.59
 # ANGULAR_ANGLE_OFFSET_CW = -0.3
-ANGULAR_RATE_CCW = 1.30 # 2.07
-ANGULAR_RATE_CW = 1.44 #2.16
+ANGULAR_RATE_CCW = 1.68 # 2.07
+ANGULAR_RATE_CW = 1.74 #2.16
 ANGULAR_ANGLE_OFFSET_CCW = 0.03 # -0.59
 ANGULAR_ANGLE_OFFSET_CW = 0.0
 
