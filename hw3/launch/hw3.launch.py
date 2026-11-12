@@ -14,6 +14,7 @@ def generate_launch_description():
         name='ekf_localizer',
         output='screen',
         emulate_tty=True,
+        arguments=['--ros-args', '--log-level', 'ekf_localizer:=DEBUG'],
     )
 
     waypoint_controller = Node(

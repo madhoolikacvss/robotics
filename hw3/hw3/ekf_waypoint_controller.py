@@ -50,6 +50,7 @@ class EKFWaypointController(Node):
         self.desired_command = Twist()
         self.stale_stop_logged = False
         self.final_waypoint_wait_started: Optional[float] = None
+        self.final_waypoint_settled = False
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
         self.last_pose_received_time: Optional[float] = None
         self.frame_mismatch_logged = False
@@ -322,6 +323,7 @@ class EKFWaypointController(Node):
                 self.publish_stop()
                 return
             self.final_waypoint_wait_started = None
+            self.final_waypoint_settled = True
 
         self.stale_stop_logged = False
         robot_x, robot_y, robot_yaw = self.latest_estimated_position
@@ -366,6 +368,7 @@ class EKFWaypointController(Node):
                 self.motion.current_waypoint_idx
                 == len(self.motion.waypoints) - 1
                 and self.final_waypoint_wait_started is None
+                and not self.final_waypoint_settled
             ):
                 self.final_waypoint_wait_started = now
                 self.publish_stop()

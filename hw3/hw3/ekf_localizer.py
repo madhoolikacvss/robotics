@@ -204,25 +204,25 @@ class AprilTagEKFLocalizer(Node):
             self.declare_parameter('initial_yaw', 0.0).value
         )
         initial_position_std = float(
-            self.declare_parameter('initial_position_std', 0.0).value
+            self.declare_parameter('initial_position_std', 0.1).value
         )
         initial_yaw_std = float(
-            self.declare_parameter('initial_yaw_std', 0.0).value
+            self.declare_parameter('initial_yaw_std', 0.1).value
         )
         linear_velocity_std = float(
-            self.declare_parameter('linear_velocity_std', 0.010).value
+            self.declare_parameter('linear_velocity_std', 0.02).value # 0.01
         )
         angular_velocity_std = float(
-            self.declare_parameter('angular_velocity_std', 0.25).value
+            self.declare_parameter('angular_velocity_std', 0.20).value # 0.25
         )
         tag_position_x_std = float(
-            self.declare_parameter('tag_position_x_std', 0.013).value
+            self.declare_parameter('tag_position_x_std', 0.08).value # 0.013
         )
         tag_position_y_std = float(
-            self.declare_parameter('tag_position_y_std', 0.017).value
+            self.declare_parameter('tag_position_y_std', 0.08).value # 0.017
         )
         self.gate_threshold = float(
-            self.declare_parameter('mahalanobis_gate', 1).value
+            self.declare_parameter('mahalanobis_gate', 12).value
         )
         positive_parameters = (
             self.tag_max_age, self.command_timeout, linear_velocity_std,
@@ -256,7 +256,7 @@ class AprilTagEKFLocalizer(Node):
             gate_threshold=self.gate_threshold,
         )
 
-        camera_xyz = np.array([0.07, 0.0, 0.12])
+        camera_xyz = np.array([0.09, 0.0, 0.127])
         camera_rpy = (-math.pi / 2.0, 0.0, -math.pi / 2.0)
         self.rotation_base_camera = tf_transformations.euler_matrix(
             *camera_rpy, axes='sxyz'
@@ -360,18 +360,45 @@ class AprilTagEKFLocalizer(Node):
                     Time(),
                     timeout=Duration(seconds=0.0),
                 )
+                stamp = transform.header.stamp
+                # Debug
+                stamp_seconds = stamp.sec + stamp.nanosec * 1e-9
+
+                self.get_logger().info(
+                    f'{tag_frame}: '
+                    f'now={now:.3f}, '
+                    f'tf_stamp={stamp_seconds:.3f}, '
+                    f'age={now - stamp_seconds:.3f}'
+                )
+                # Debug end
             except TransformException:
                 continue
 
             stamp = transform.header.stamp
             stamp_seconds = stamp.sec + stamp.nanosec * 1e-9
             age = now - stamp_seconds
-            if (
-                stamp_seconds <= self.last_used_tag_stamp.get(tag_frame, 0.0)
-                or stamp_seconds <= 0.0
-                or age < -0.10
-                or age > self.tag_max_age
-            ):
+            last_used_stamp = self.last_used_tag_stamp.get(tag_frame, 0.0)
+            if stamp_seconds <= 0.0:
+                reason = f'invalid timestamp {stamp_seconds:.9f}'
+            elif stamp_seconds <= last_used_stamp:
+                reason = (
+                    f'timestamp {stamp_seconds:.9f} is not newer than '
+                    f'last-used timestamp {last_used_stamp:.9f}'
+                )
+            elif age < -0.10:
+                reason = f'transform is {-age:.3f}s in the future'
+            elif age > self.tag_max_age:
+                reason = (
+                    f'transform age {age:.3f}s exceeds '
+                    f'tag_max_age {self.tag_max_age:.3f}s'
+                )
+            else:
+                reason = None
+
+            if reason is not None:
+                self.get_logger().debug(
+                    f'Skipping {tag_frame} observation: {reason}.'
+                )
                 continue
 
             self.last_used_tag_stamp[tag_frame] = stamp_seconds
