@@ -37,6 +37,8 @@ setup(
             'hw3.dead_reckoning_waypoint_controller:main',
             'ekf_localizer = hw3.ekf_localizer:main',
             'tag_position_logger = hw3.tag_position_logger:main',
+            'camera_position_inspector = '
+            'hw3.camera_position_inspector:main',
             'calibrate_angular_motion = '
             'hw3.calibrate_angular_motion:main',
         ],

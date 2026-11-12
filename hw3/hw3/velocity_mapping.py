@@ -16,9 +16,9 @@ class VelocityToMotorNode(Node):
         self.wheel_base = 0.127  # [m]
 
         self.cmd_max = 1.5
-        self.left_linear_deadzone = 0.02 # 0.09
+        self.left_linear_deadzone = 0.01 # 0.09
         self.left_linear_slope = 1.59
-        self.right_linear_deadzone = 0.032 # 0.05
+        self.right_linear_deadzone = 0.047 # 0.05
         self.right_linear_slope = 1.59
         
         self.left_angular_deadzone = 0.22 #0.475/2

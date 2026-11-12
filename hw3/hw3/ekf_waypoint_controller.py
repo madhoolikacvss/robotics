@@ -18,6 +18,7 @@ from .waypoint_motion import (
     CONTROL_PERIOD,
     POSITION_TOLERANCE,
     WaypointMotion,
+    wrap_angle,
 )
 
 
@@ -53,8 +54,12 @@ class EKFWaypointController(Node):
         self.final_waypoint_settled = False
         self.latest_estimated_position: Optional[tuple[float, float, float]] = None
         self.last_pose_received_time: Optional[float] = None
+        self.pose_update_count = 0
+        self.last_controlled_pose_count = 0
         self.frame_mismatch_logged = False
-        self.latest_tag_positions: dict[str, tuple[float, float]] = {}
+        self.latest_tag_positions: dict[
+            str, tuple[float, float, float, float, float]
+        ] = {}
         self.tag_frame_mismatch_logged = False
         self.tag_position_log_written = False
 
@@ -72,14 +77,13 @@ class EKFWaypointController(Node):
             ).value
         ).expanduser()
         self.position_log_file = self.position_log_path.open(
-            'a', newline='', encoding='utf-8'
+            'w', newline='', encoding='utf-8'
         )
         self.position_log_writer = csv.writer(self.position_log_file)
-        if self.position_log_path.stat().st_size == 0:
-            self.position_log_writer.writerow(
-                ['timestamp_sec', 'frame', 'x', 'y', 'yaw_rad']
-            )
-            self.position_log_file.flush()
+        self.position_log_writer.writerow(
+            ['timestamp_sec', 'frame', 'x', 'y', 'yaw_rad']
+        )
+        self.position_log_file.flush()
 
         self.waypoint_log_path = Path(
             self.declare_parameter(
@@ -113,6 +117,7 @@ class EKFWaypointController(Node):
         )
         self.tag_position_log_writer.writerow([
             'timestamp_sec', 'frame', 'tag', 'x', 'y',
+            'cov_xx', 'cov_xy', 'cov_yy',
         ])
         self.tag_position_log_file.flush()
 
@@ -212,6 +217,7 @@ class EKFWaypointController(Node):
             float(yaw),
         )
         self.last_pose_received_time = self._now_seconds()
+        self.pose_update_count += 1
         self.frame_mismatch_logged = False
 
     def tag_positions_callback(self, msg: String):
@@ -251,19 +257,28 @@ class EKFWaypointController(Node):
                 )
                 return
             name, x, y = tag.get('name'), tag.get('x'), tag.get('y')
+            cov_xx = tag.get('cov_xx')
+            cov_xy = tag.get('cov_xy')
+            cov_yy = tag.get('cov_yy')
             if (
                 not isinstance(name, str)
-                or not isinstance(x, (int, float))
-                or not isinstance(y, (int, float))
-                or not math.isfinite(x)
-                or not math.isfinite(y)
+                or not all(
+                    isinstance(value, (int, float))
+                    and math.isfinite(value)
+                    for value in (x, y, cov_xx, cov_xy, cov_yy)
+                )
+                or cov_xx < 0.0
+                or cov_yy < 0.0
             ):
                 self.get_logger().error(
                     'Rejecting /tag_positions message with invalid tag '
-                    'coordinates.'
+                    'coordinates or covariance.'
                 )
                 return
-            positions[name] = (float(x), float(y))
+            positions[name] = (
+                float(x), float(y), float(cov_xx), float(cov_xy),
+                float(cov_yy),
+            )
 
         self.latest_tag_positions = positions
         self.tag_frame_mismatch_logged = False
@@ -274,10 +289,13 @@ class EKFWaypointController(Node):
             return
 
         timestamp = self._now_seconds()
-        for tag, (x, y) in sorted(self.latest_tag_positions.items()):
+        for tag, (x, y, cov_xx, cov_xy, cov_yy) in sorted(
+            self.latest_tag_positions.items()
+        ):
             self.tag_position_log_writer.writerow([
                 f'{timestamp:.9f}', self.world_frame, tag,
                 f'{x:.6f}', f'{y:.6f}',
+                f'{cov_xx:.9f}', f'{cov_xy:.9f}', f'{cov_yy:.9f}',
             ])
         self.tag_position_log_file.flush()
         self.tag_position_log_written = True
@@ -314,6 +332,10 @@ class EKFWaypointController(Node):
                 )
                 self.stale_stop_logged = True
             return
+
+        if self.last_controlled_pose_count == self.pose_update_count:
+            return
+        self.last_controlled_pose_count = self.pose_update_count
 
         if self.final_waypoint_wait_started is not None:
             if (
@@ -353,13 +375,43 @@ class EKFWaypointController(Node):
             or now - self.last_control_log_time >= 1.0
             or now < self.last_control_log_time
         ):
+            waypoint = self.motion.waypoints[
+                self.motion.current_waypoint_idx
+            ]
+            desired_heading = math.atan2(dy, dx)
+            bearing_heading_error = wrap_angle(
+                desired_heading - robot_yaw
+            )
+            if self.motion.current_waypoint_idx > 0:
+                previous_waypoint = self.motion.waypoints[
+                    self.motion.current_waypoint_idx - 1
+                ]
+                segment_dx = waypoint[0] - previous_waypoint[0]
+                segment_dy = waypoint[1] - previous_waypoint[1]
+                segment_length = math.hypot(segment_dx, segment_dy)
+                if segment_length > 0.0:
+                    lateral_error = (
+                        segment_dx * (robot_y - previous_waypoint[1])
+                        - segment_dy * (robot_x - previous_waypoint[0])
+                    ) / segment_length
+                    lateral_error_label = f'{lateral_error:.3f}m'
+                else:
+                    lateral_error_label = 'undefined (zero-length segment)'
+            else:
+                lateral_error_label = 'undefined (no previous waypoint)'
+
             self.get_logger().info(
-                f'EKF pose=({robot_x:.3f}, {robot_y:.3f}, '
-                f'{robot_yaw:.3f}) '
-                f'waypoint={self.motion.current_waypoint_idx} '
-                f'distance_err={distance_error:.3f} '
-                f'heading_err={heading_error:.3f} '
-                f'v={cmd.linear.x:.3f}, w={cmd.angular.z:.3f}'
+                f'DIAGNOSTIC EKF position: x={robot_x:.3f}m, '
+                f'y={robot_y:.3f}m; EKF yaw={robot_yaw:.3f}rad; '
+                f'waypoint[{self.motion.current_waypoint_idx}]: '
+                f'x={waypoint[0]:.3f}m, y={waypoint[1]:.3f}m; '
+                f'dx={dx:.3f}m, dy={dy:.3f}m; '
+                f'desired_heading_atan2={desired_heading:.3f}rad; '
+                f'bearing_heading_error={bearing_heading_error:.3f}rad; '
+                f'controller_heading_error={heading_error:.3f}rad; '
+                f'lateral_position_error={lateral_error_label}; '
+                f'command_v={cmd.linear.x:.3f}m/s, '
+                f'command_w={cmd.angular.z:.3f}rad/s'
             )
             self.last_control_log_time = now
 

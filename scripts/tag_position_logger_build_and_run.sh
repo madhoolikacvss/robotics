@@ -33,9 +33,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ros2 run tf2_ros static_transform_publisher \
-  --x "${CAMERA_X:-0.09}" \
+  --x "${CAMERA_X:-0.125}" \
   --y "${CAMERA_Y:-0.0}" \
-  --z "${CAMERA_Z:-0.125}" \
+  --z "${CAMERA_Z:-0.09}" \
   --yaw "${CAMERA_YAW:--1.5708}" \
   --pitch "${CAMERA_PITCH:-0.0}" \
   --roll "${CAMERA_ROLL:--1.5708}" \

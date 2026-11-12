@@ -14,6 +14,7 @@ from rclpy.node import Node
 
 from .waypoint_motion import (
     CONTROL_PERIOD,
+    LINEAR_VELOCITY_SCALE,
     POSITION_TOLERANCE,
     WaypointMotion,
     estimate_angular_displacement,
@@ -86,7 +87,7 @@ class DeadReckoningWaypointController(Node):
     def _integrate_command(self, dt: float):
         if dt <= 0.0:
             return
-        linear = self.last_command.linear.x
+        linear = self.last_command.linear.x * LINEAR_VELOCITY_SCALE
         angular_command = self.last_command.angular.z
         direction = (
             math.copysign(1.0, angular_command)
