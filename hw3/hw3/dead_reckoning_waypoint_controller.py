@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Follow waypoints using an open-loop pose integrated from /cmd_vel."""
 
+import csv
 import math
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import rclpy
@@ -34,9 +38,34 @@ class DeadReckoningWaypointController(Node):
         self.motion = WaypointMotion()
         self.last_time = self._now_seconds()
         self.last_command = Twist()
+        self.linear_command_started_at: Optional[
+            tuple[float, str, float]
+        ] = None
+        self.angular_command_started_at: Optional[
+            tuple[float, str, float]
+        ] = None
         self.angular_command_direction = 0.0
         self.angular_command_elapsed = 0.0
         self.last_log_time: Optional[float] = None
+
+        self.command_duration_log_path = Path(
+            self.declare_parameter(
+                'command_duration_log_path', 'command_durations.csv'
+            ).value
+        ).expanduser()
+        self.command_duration_log_file = self.command_duration_log_path.open(
+            'a', newline='', encoding='utf-8'
+        )
+        self.command_duration_log_writer = csv.writer(
+            self.command_duration_log_file
+        )
+        if self.command_duration_log_path.stat().st_size == 0:
+            self.command_duration_log_writer.writerow([
+                'command_type', 'command_value_start',
+                'command_value_stop', 'started_at_utc', 'stopped_at_utc',
+                'duration_seconds',
+            ])
+            self.command_duration_log_file.flush()
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pose_pub = self.create_publisher(
@@ -85,6 +114,72 @@ class DeadReckoningWaypointController(Node):
             self.y += linear * math.sin(self.yaw) * dt
         self.yaw = wrap_angle(next_yaw)
 
+    def _publish_command(self, command: Twist):
+        now = time.monotonic()
+        now_utc = datetime.now(timezone.utc).isoformat()
+        previous = self.last_command
+
+        if abs(previous.linear.x) > 1e-9 and (
+            abs(command.linear.x) <= 1e-9
+            or previous.linear.x * command.linear.x < 0.0
+        ):
+            self._write_command_duration(
+                'linear', previous.linear.x,
+                self.linear_command_started_at, now, now_utc,
+            )
+            self.linear_command_started_at = None
+        if abs(command.linear.x) > 1e-9 and (
+            abs(previous.linear.x) <= 1e-9
+            or previous.linear.x * command.linear.x < 0.0
+        ):
+            self.linear_command_started_at = (
+                now, now_utc, command.linear.x
+            )
+
+        if abs(previous.angular.z) > 1e-9 and (
+            abs(command.angular.z) <= 1e-9
+            or previous.angular.z * command.angular.z < 0.0
+        ):
+            self._write_command_duration(
+                'angular', previous.angular.z,
+                self.angular_command_started_at, now, now_utc,
+            )
+            self.angular_command_started_at = None
+        if abs(command.angular.z) > 1e-9 and (
+            abs(previous.angular.z) <= 1e-9
+            or previous.angular.z * command.angular.z < 0.0
+        ):
+            self.angular_command_started_at = (
+                now, now_utc, command.angular.z
+            )
+
+        self.last_command = command
+        self.cmd_pub.publish(command)
+
+    def _write_command_duration(
+        self,
+        command_type: str,
+        command_value: float,
+        started_at: Optional[tuple[float, str, float]],
+        stopped_at: float,
+        stopped_at_utc: str,
+    ):
+        if started_at is None:
+            return
+        self.command_duration_log_writer.writerow([
+            command_type,
+            f'{started_at[2]:.6f}',
+            f'{command_value:.6f}',
+            started_at[1],
+            stopped_at_utc,
+            f'{stopped_at - started_at[0]:.6f}',
+        ])
+        self.command_duration_log_file.flush()
+
+    def destroy_node(self):
+        self.command_duration_log_file.close()
+        return super().destroy_node()
+
     def _publish_pose(self, now: float):
         pose = PoseStamped()
         pose.header.stamp = self.get_clock().now().to_msg()
@@ -116,15 +211,14 @@ class DeadReckoningWaypointController(Node):
             self.get_logger().warning(
                 'ROS time moved backwards; skipping dead-reckoning update.'
             )
-            self.last_command = Twist()
+            self._publish_command(Twist())
             return
 
         self._integrate_command(dt)
         self._publish_pose(now)
 
         if self.motion.finished:
-            self.last_command = Twist()
-            self.cmd_pub.publish(self.last_command)
+            self._publish_command(Twist())
             return
 
         (
@@ -134,10 +228,10 @@ class DeadReckoningWaypointController(Node):
             linear, angular, heading_error
         )
 
-        self.last_command = Twist()
-        self.last_command.linear.x = linear
-        self.last_command.angular.z = angular
-        self.cmd_pub.publish(self.last_command)
+        command = Twist()
+        command.linear.x = linear
+        command.angular.z = angular
+        self._publish_command(command)
 
         if action == 'reached':
             waypoint_index = self.motion.current_waypoint_idx
@@ -146,8 +240,7 @@ class DeadReckoningWaypointController(Node):
                 f'position error={distance_error:.3f}m.'
             )
             self.motion.advance_waypoint()
-            self.last_command = Twist()
-            self.cmd_pub.publish(self.last_command)
+            self._publish_command(Twist())
 
 
 def main(args=None):
@@ -158,7 +251,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.cmd_pub.publish(Twist())
+        node._publish_command(Twist())
         node.destroy_node()
         rclpy.shutdown()
 

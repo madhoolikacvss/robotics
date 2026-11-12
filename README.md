@@ -49,6 +49,31 @@ uses another ROS 2 distribution. The launch file starts the `robot_vision_camera
 node and Foxglove bridge. The camera node uses GStreamer's `qtiqmmfsrc`, so it
 requires the Rubik Pi camera source plugin and is not a generic USB-camera driver.
 
+To record detected AprilTag positions in the robot frame, first start the
+camera and AprilTag detector with `scripts/apriltag_build_and_run.sh`. In
+another terminal, start the logger:
+
+```sh
+bash ./scripts/tag_position_logger_build_and_run.sh
+```
+
+The script publishes the static `base_link` to `camera_frame` transform using
+the default mounting values in `robot_vision/config/camera_extrinsic.yaml`,
+then starts the logger. The node listens to `/tf` and `/tf_static` through TF2
+and writes each fresh tag observation once, with its measurement timestamp
+and robot-frame x/y coordinates in meters. The default output file is
+`apriltag_positions.csv`. ROS arguments can be passed through the script, for
+example:
+
+```sh
+bash ./scripts/tag_position_logger_build_and_run.sh \
+  -p csv_path:=apriltag_positions.csv
+```
+
+If needed, the static transform can be adjusted with `BASE_FRAME`,
+`CAMERA_FRAME`, `CAMERA_X`, `CAMERA_Y`, `CAMERA_Z`, `CAMERA_YAW`,
+`CAMERA_PITCH`, and `CAMERA_ROLL` environment variables. Do not start a
+second static publisher for the same frame pair.
 
 # Assignment 2 TODO:
 

@@ -210,20 +210,24 @@ class AprilTagEKFLocalizer(Node):
             self.declare_parameter('initial_yaw_std', 0.0).value
         )
         linear_velocity_std = float(
-            self.declare_parameter('linear_velocity_std', 0.05).value
+            self.declare_parameter('linear_velocity_std', 0.010).value
         )
         angular_velocity_std = float(
-            self.declare_parameter('angular_velocity_std', 0.10).value
+            self.declare_parameter('angular_velocity_std', 0.25).value
         )
-        tag_position_std = float(
-            self.declare_parameter('tag_position_std', 0.08).value
+        tag_position_x_std = float(
+            self.declare_parameter('tag_position_x_std', 0.013).value
+        )
+        tag_position_y_std = float(
+            self.declare_parameter('tag_position_y_std', 0.017).value
         )
         self.gate_threshold = float(
-            self.declare_parameter('mahalanobis_gate', 100).value
+            self.declare_parameter('mahalanobis_gate', 1).value
         )
         positive_parameters = (
             self.tag_max_age, self.command_timeout, linear_velocity_std,
-            angular_velocity_std, tag_position_std, self.gate_threshold,
+            angular_velocity_std, tag_position_x_std, tag_position_y_std,
+            self.gate_threshold,
         )
         if any(value <= 0.0 for value in positive_parameters):
             raise ValueError('EKF noise, age, timeout, and gate parameters '
@@ -245,7 +249,10 @@ class AprilTagEKFLocalizer(Node):
                 linear_velocity_std ** 2,
                 angular_velocity_std ** 2,
             ]),
-            measurement_noise=np.eye(2) * tag_position_std ** 2,
+            measurement_noise=np.diag([
+                tag_position_x_std ** 2,
+                tag_position_y_std ** 2,
+            ]),
             gate_threshold=self.gate_threshold,
         )
 
