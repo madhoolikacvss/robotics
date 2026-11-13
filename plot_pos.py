@@ -16,11 +16,24 @@ import numpy as np
 # ---------------------------------------------------------------
 # Waypoints (must match the controller exactly)
 # ---------------------------------------------------------------
+# WAYPOINTS = np.array([
+#     [0.00, 0.00, 0.0],
+#     [1.00, 0.00, 0.0],
+#     [1.00, 2.00, math.pi],
+#     [0.00, 0.00, 0.0],
+# ], dtype=float)
+
 WAYPOINTS = np.array([
     [0.00, 0.00, 0.0],
-    [1.00, 0.00, 0.0],
-    [1.00, 2.00, math.pi],
-    [0.00, 0.00, 0.0],
+    [0.476244, 0.000000, 0.0],
+    [1.149756, 0.000000, 0.0],
+    [1.626000, 0.476244, math.pi / 4],
+    [1.626000, 1.149756, math.pi / 2],
+    [1.149756, 1.626000, 3 * math.pi / 4],
+    [0.476244, 1.626000, math.pi],
+    [0.000000, 1.149756, -3 * math.pi / 4],
+    [0.000000, 0.476244, -math.pi / 2],
+    [0.476244, 0.000000, -math.pi / 4],
 ], dtype=float)
 
 PLOT_INTERVAL = 0.5   # seconds between plotted robot positions
@@ -63,7 +76,7 @@ def subsample_by_time(ts, xs, ys, interval):
 
 
 def main():
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else 'robot_position.csv'
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else 'robot_position_octogon_2.csv'
     ts, xs, ys = load_csv(csv_path)
     ts_s, xs_s, ys_s = subsample_by_time(ts, xs, ys, PLOT_INTERVAL)
 
