@@ -80,16 +80,20 @@ if not (
     raise ValueError('Measured obstacle must lie inside the measured workspace.')
 
 
+WORKSPACE_EDGE_MARGIN = 0.05  # robot-center inset from physical workspace edges
+
+
 def planning_bounds(center_clearance):
     """Return inset workspace and expanded obstacle for a robot center.
 
-    center_clearance is the TOTAL center-to-boundary distance in meters,
-    including the footprint allowance and extra buffer.
+    center_clearance is the obstacle expansion in meters, including the
+    footprint allowance and extra buffer. Workspace edges use the separate
+    WORKSPACE_EDGE_MARGIN robot-center inset.
     """
     if not math.isfinite(center_clearance) or center_clearance < 0.0:
         raise ValueError('Center clearance must be finite and non-negative.')
     return (
-        WORKSPACE.expanded(-center_clearance),
+        WORKSPACE.expanded(-WORKSPACE_EDGE_MARGIN),
         OBSTACLE.expanded(center_clearance),
     )
 
@@ -98,8 +102,8 @@ USABLE_WORKSPACE, EXPANDED_OBSTACLE = planning_bounds(CENTER_CLEARANCE)
 # These are robot-center positions in the physical workspace frame.
 # Avoid placing endpoints exactly on the runtime stop boundary: small visual
 # corrections at startup would otherwise immediately latch a workspace stop.
-ENDPOINT_INSET = 0.05  # meters inward from the usable-workspace boundary
-START = (USABLE_WORKSPACE.x_min + ENDPOINT_INSET,
-         USABLE_WORKSPACE.y_min + ENDPOINT_INSET)
-GOAL = (USABLE_WORKSPACE.x_max - ENDPOINT_INSET,
-        USABLE_WORKSPACE.y_max - ENDPOINT_INSET)
+ENDPOINT_INSET = 0.05  # additional endpoint inset beyond CENTER_CLEARANCE
+START = (WORKSPACE.x_min + CENTER_CLEARANCE + ENDPOINT_INSET,
+         WORKSPACE.y_min + CENTER_CLEARANCE + ENDPOINT_INSET)
+GOAL = (WORKSPACE.x_max - CENTER_CLEARANCE - ENDPOINT_INSET,
+        WORKSPACE.y_max - CENTER_CLEARANCE - ENDPOINT_INSET)
