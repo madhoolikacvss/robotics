@@ -96,5 +96,10 @@ def planning_bounds(center_clearance):
 
 USABLE_WORKSPACE, EXPANDED_OBSTACLE = planning_bounds(CENTER_CLEARANCE)
 # These are robot-center positions in the physical workspace frame.
-START = USABLE_WORKSPACE.corners[0]
-GOAL = USABLE_WORKSPACE.corners[2]
+# Avoid placing endpoints exactly on the runtime stop boundary: small visual
+# corrections at startup would otherwise immediately latch a workspace stop.
+ENDPOINT_INSET = 0.05  # meters inward from the usable-workspace boundary
+START = (USABLE_WORKSPACE.x_min + ENDPOINT_INSET,
+         USABLE_WORKSPACE.y_min + ENDPOINT_INSET)
+GOAL = (USABLE_WORKSPACE.x_max - ENDPOINT_INSET,
+        USABLE_WORKSPACE.y_max - ENDPOINT_INSET)

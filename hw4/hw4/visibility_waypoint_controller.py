@@ -52,7 +52,11 @@ class VisibilityWaypointController(EKFWaypointController):
         if pose is not None:
             x, y, yaw = pose
             if not all(math.isfinite(v) for v in pose) or not contains_point(USABLE_WORKSPACE, (x, y)):
-                self.boundary_stop('estimated robot center outside usable workspace')
+                self.boundary_stop(
+                    f'estimated center ({x:.3f}, {y:.3f}) outside '
+                    f'x=[{USABLE_WORKSPACE.x_min:.3f}, {USABLE_WORKSPACE.x_max:.3f}], '
+                    f'y=[{USABLE_WORKSPACE.y_min:.3f}, {USABLE_WORKSPACE.y_max:.3f}]'
+                )
                 return
 
         if (self.motion.finished or pose is None or self.last_pose_received_time is None
