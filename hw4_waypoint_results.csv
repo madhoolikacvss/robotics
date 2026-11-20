@@ -1,0 +1,2 @@
+timestamp_sec,frame,waypoint_index,target_x,target_y,target_yaw_rad,estimated_x,estimated_y,estimated_yaw_rad,error_x,error_y,position_error_m,heading_error_rad
+1795133761.581073999,hw4_map,0,0.291726,0.291726,1.491450,0.339413,0.279755,1.261635,-0.047687,0.011971,0.049167,0.229815
