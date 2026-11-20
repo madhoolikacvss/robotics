@@ -20,6 +20,11 @@ setup(
     description='HW4 path planning',
     license='MIT',
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'visibility_waypoint_controller = '
+            'hw4.visibility_waypoint_controller:main',
+            'robot_position_logger = hw4.robot_position_logger:main',
+            'known_tag_localizer = hw4.known_tag_localizer:main',
+        ],
     },
 )
