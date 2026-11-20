@@ -7,9 +7,12 @@ Usage:
     python3 plot_trajectory.py robot_positions.csv
 """
 
+import os
 import sys
 import csv
 import math
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -25,16 +28,24 @@ import numpy as np
 
 WAYPOINTS = np.array([
     [0.00, 0.00, 0.0],
-    [0.476244, 0.000000, 0.0],
-    [1.149756, 0.000000, 0.0],
-    [1.626000, 0.476244, math.pi / 4],
-    [1.626000, 1.149756, math.pi / 2],
-    [1.149756, 1.626000, 3 * math.pi / 4],
-    [0.476244, 1.626000, math.pi],
-    [0.000000, 1.149756, -3 * math.pi / 4],
-    [0.000000, 0.476244, -math.pi / 2],
-    [0.476244, 0.000000, -math.pi / 4],
-], dtype=float)
+    [1.626, 0.00, math.pi / 2],
+    [1.626, 1.626, math.pi],
+    [0.00, 1.626, -math.pi/2],
+    [0.00, 0.00, 0.0],
+])
+
+# WAYPOINTS = np.array([
+#     [0.00, 0.00, 0.0],
+#     [0.476244, 0.000000, 0.0],
+#     [1.149756, 0.000000, 0.0],
+#     [1.626000, 0.476244, math.pi / 4],
+#     [1.626000, 1.149756, math.pi / 2],
+#     [1.149756, 1.626000, 3 * math.pi / 4],
+#     [0.476244, 1.626000, math.pi],
+#     [0.000000, 1.149756, -3 * math.pi / 4],
+#     [0.000000, 0.476244, -math.pi / 2],
+#     [0.476244, 0.000000, -math.pi / 4],
+# ], dtype=float)
 
 PLOT_INTERVAL = 0.5   # seconds between plotted robot positions
 
@@ -75,13 +86,70 @@ def subsample_by_time(ts, xs, ys, interval):
     return ts[keep], xs[keep], ys[keep]
 
 
+def load_waypoint_error_summary(path):
+    """Average position and heading error for each waypoint from a CSV log."""
+    if not path or not os.path.exists(path):
+        return {}
+
+    waypoint_error_data = {}
+    with open(path, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                idx = int(float(row['waypoint_index']))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            entry = waypoint_error_data.setdefault(
+                idx,
+                {'position': [], 'heading': [], 'x': [], 'y': []}
+            )
+
+            for key, column_name in [('position', 'position_error_m'),
+                                     ('heading', 'heading_error_rad'),
+                                     ('x', 'error_x'),
+                                     ('y', 'error_y')]:
+                if column_name not in row:
+                    continue
+                try:
+                    value = float(row[column_name])
+                except ValueError:
+                    continue
+                entry[key].append(value)
+
+    summary = {}
+    for idx, values in waypoint_error_data.items():
+        summary[idx] = {
+            'position': float(np.mean(values['position'])) if values['position'] else np.nan,
+            'heading': float(np.mean(values['heading'])) if values['heading'] else np.nan,
+            'x': float(np.mean(values['x'])) if values['x'] else np.nan,
+            'y': float(np.mean(values['y'])) if values['y'] else np.nan,
+        }
+    return summary
+
+
 def main():
     csv_path = sys.argv[1] if len(sys.argv) > 1 else 'robot_position_octogon_2.csv'
+    error_csv_path = None
+    if len(sys.argv) > 2:
+        error_csv_path = sys.argv[2]
+    elif os.path.exists('waypoint_results.csv'):
+        error_csv_path = 'waypoint_results.csv'
+
     ts, xs, ys = load_csv(csv_path)
     ts_s, xs_s, ys_s = subsample_by_time(ts, xs, ys, PLOT_INTERVAL)
+    avg_errors = load_waypoint_error_summary(error_csv_path)
 
     print(f'Loaded {len(ts)} samples; plotting {len(ts_s)} '
           f'(~{PLOT_INTERVAL}s apart)')
+
+    if avg_errors:
+        print('\nAverage error by waypoint:')
+        for idx in sorted(avg_errors):
+            err = avg_errors[idx]
+            print(f'  WP{idx}: position_error={err["position"]:.4f} m, '
+                  f'heading_error={err["heading"]:.4f} rad, '
+                  f'error_xy=({err["x"]:.4f}, {err["y"]:.4f}) m')
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
@@ -91,7 +159,11 @@ def main():
     ax.plot(wpx, wpy, '-o', color='tab:blue', linewidth=2,
             markersize=8, label='Waypoint path')
     for i, (x, y, _) in enumerate(WAYPOINTS):
-        ax.annotate(f'WP{i}\n({x:.1f},{y:.1f})',
+        label = f'WP{i}\n({x:.1f},{y:.1f})'
+        if i in avg_errors:
+            err = avg_errors[i]
+            label += f'\navg err={err["position"]:.2f} m'
+        ax.annotate(label,
                     xy=(x, y), xytext=(8, 8),
                     textcoords='offset points', fontsize=9,
                     color='tab:blue')
