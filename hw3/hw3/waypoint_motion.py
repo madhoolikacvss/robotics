@@ -179,6 +179,7 @@ class WaypointMotion:
     """Common waypoint state machine and turn shaping for both controllers."""
 
     def __init__(self):
+        self.position_tolerance = POSITION_TOLERANCE
         self.waypoints = WAYPOINTS
         self.current_waypoint_idx = 0
         self.phase = 'position'
@@ -196,7 +197,7 @@ class WaypointMotion:
         dy = waypoint[1] - robot_y
         distance_error = math.hypot(dx, dy)
 
-        if self.phase == 'position' and distance_error <= POSITION_TOLERANCE:
+        if self.phase == 'position' and distance_error <= self.position_tolerance:
             self.phase = 'heading'
             self.reset_turn()
 

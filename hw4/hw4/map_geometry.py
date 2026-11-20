@@ -13,7 +13,7 @@ from .tag_map import WORKSPACE_TAGS, OBSTACLE_TAGS
 FT_TO_M = 0.3048
 ROBOT_SIDE = 1.0 * FT_TO_M
 ROBOT_TURN_RADIUS = ROBOT_SIDE / math.sqrt(2.0)
-REQUESTED_MARGIN = 0.25 * FT_TO_M
+REQUESTED_MARGIN = 0.05  # meters of extra obstacle clearance
 # Extra clearance is added beyond the footprint, not measured from its center.
 CENTER_CLEARANCE = ROBOT_TURN_RADIUS + REQUESTED_MARGIN
 
@@ -103,7 +103,7 @@ USABLE_WORKSPACE, EXPANDED_OBSTACLE = planning_bounds(CENTER_CLEARANCE)
 # Avoid placing endpoints exactly on the runtime stop boundary: small visual
 # corrections at startup would otherwise immediately latch a workspace stop.
 ENDPOINT_INSET = 0.05  # additional endpoint inset beyond CENTER_CLEARANCE
-START = (WORKSPACE.x_min + CENTER_CLEARANCE + ENDPOINT_INSET,
-         WORKSPACE.y_min + CENTER_CLEARANCE + ENDPOINT_INSET)
-GOAL = (WORKSPACE.x_max - CENTER_CLEARANCE - ENDPOINT_INSET,
-        WORKSPACE.y_max - CENTER_CLEARANCE - ENDPOINT_INSET)
+START = (WORKSPACE.x_min + ROBOT_TURN_RADIUS + 0.25 * FT_TO_M + ENDPOINT_INSET,
+         WORKSPACE.y_min + ROBOT_TURN_RADIUS + 0.25 * FT_TO_M + ENDPOINT_INSET)
+GOAL = (WORKSPACE.x_max - ROBOT_TURN_RADIUS - 0.25 * FT_TO_M - ENDPOINT_INSET,
+        WORKSPACE.y_max - ROBOT_TURN_RADIUS - 0.25 * FT_TO_M - ENDPOINT_INSET)
