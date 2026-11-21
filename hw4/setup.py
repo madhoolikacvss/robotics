@@ -25,6 +25,7 @@ setup(
             'hw4.visibility_waypoint_controller:main',
             'robot_position_logger = hw4.robot_position_logger:main',
             'known_tag_localizer = hw4.known_tag_localizer:main',
+            'rrt_planner = hw4.rrt:main',
         ],
     },
 )
