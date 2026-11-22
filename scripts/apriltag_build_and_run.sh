@@ -17,13 +17,23 @@ colcon build --packages-up-to robot_vision_camera apriltag_ros --symlink-install
 source install/setup.bash
 
 camera_pid=""
+tf_pid=""
 cleanup() {
-  if [ -n "$camera_pid" ] && kill -0 "$camera_pid" 2>/dev/null; then
-    kill -INT "$camera_pid" 2>/dev/null || true
-    wait "$camera_pid" 2>/dev/null || true
-  fi
+  for pid in "$camera_pid" "$tf_pid"; do
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -INT "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
 }
 trap cleanup EXIT INT TERM
+
+ros2 run tf2_ros static_transform_publisher \
+  --x 0.125 --y 0.0 --z 0.09 \
+  --yaw -1.5708 --pitch 0.0 --roll -1.5708 \
+  --frame-id base_link \
+  --child-frame-id camera_frame &
+tf_pid=$!
 
 ros2 launch robot_vision_camera robot_vision_camera.launch.py \
   image_rectify:=true \

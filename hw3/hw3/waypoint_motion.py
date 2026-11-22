@@ -112,6 +112,7 @@ WAYPOINTS = (
 CONTROL_PERIOD = 0.01
 K_DISTANCE = 0.8
 POSITION_TOLERANCE = 0.08
+FINAL_POSITION_TOLERANCE = 0.04
 HEADING_TOLERANCE = 0.25
 LINEAR_VELOCITY_SCALE = 0.98
 # Direction-specific measured turn rates at the controller's K_OMEGA.
@@ -179,7 +180,6 @@ class WaypointMotion:
     """Common waypoint state machine and turn shaping for both controllers."""
 
     def __init__(self):
-        self.position_tolerance = POSITION_TOLERANCE
         self.waypoints = WAYPOINTS
         self.current_waypoint_idx = 0
         self.phase = 'position'
@@ -187,6 +187,13 @@ class WaypointMotion:
         self.turn_started = False
         self.turn_complete = False
         self.turn_direction = 0.0
+
+    @property
+    def position_tolerance(self) -> float:
+        """Return the tolerance for the current waypoint."""
+        if self.current_waypoint_idx == len(self.waypoints) - 1:
+            return FINAL_POSITION_TOLERANCE
+        return POSITION_TOLERANCE
 
     def command_for_pose(
         self, robot_x: float, robot_y: float, robot_yaw: float

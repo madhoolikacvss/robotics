@@ -7,7 +7,6 @@ from hw3.velocity_mapping import K_OMEGA, K_V
 from hw3.waypoint_motion import (
     HEADING_TOLERANCE,
     K_DISTANCE,
-    POSITION_TOLERANCE,
     WaypointMotion,
     wrap_angle,
 )
@@ -28,10 +27,9 @@ class RRTWaypointMotion(WaypointMotion):
             x, y = point[0], point[1]
             if not math.isfinite(x) or not math.isfinite(y):
                 raise ValueError('RRT waypoint coordinates must be finite.')
-            waypoints.append((x, y))
+            waypoints.append((x, y, 0.0))
 
-        self.position_tolerance = POSITION_TOLERANCE
-        self.waypoints: Tuple[Tuple[float, float], ...] = tuple(waypoints)
+        self.waypoints: Tuple[Tuple[float, float, float], ...] = tuple(waypoints)
 
     def command_for_pose(
         self, robot_x: float, robot_y: float, robot_yaw: float

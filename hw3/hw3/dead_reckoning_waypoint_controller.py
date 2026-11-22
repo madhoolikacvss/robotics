@@ -14,6 +14,7 @@ from rclpy.node import Node
 
 from .waypoint_motion import (
     CONTROL_PERIOD,
+    FINAL_POSITION_TOLERANCE,
     LINEAR_VELOCITY_SCALE,
     POSITION_TOLERANCE,
     WaypointMotion,
@@ -78,7 +79,8 @@ class DeadReckoningWaypointController(Node):
             'Dead-reckoning waypoint controller started. It integrates '
             '/cmd_vel without sensor feedback; run it instead of the '
             'AprilTag waypoint controller. '
-            f'Position tolerance={POSITION_TOLERANCE:.2f}m.'
+            f'Position tolerance={POSITION_TOLERANCE:.2f}m; '
+            f'final waypoint tolerance={FINAL_POSITION_TOLERANCE:.3f}m.'
         )
 
     def _now_seconds(self) -> float:

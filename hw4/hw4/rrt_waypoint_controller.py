@@ -6,7 +6,6 @@ import rclpy
 from hw3.velocity_mapping import K_V
 from hw3.waypoint_motion import (
     HEADING_TOLERANCE,
-    POSITION_TOLERANCE,
     wrap_angle,
 )
 from hw3.ekf_waypoint_controller import EKFWaypointController
@@ -19,7 +18,7 @@ from .visibility_graph import contains_point
 
 class RRTWaypointController(EKFWaypointController):
     def __init__(self):
-        path = plan_rrt(seed=0, max_iterations=10000)
+        path = plan_rrt(seed=0, max_iterations=500)
         super().__init__()
         self.motion = RRTWaypointMotion(path)
         self.boundary_stopped = False
@@ -68,7 +67,7 @@ class RRTWaypointController(EKFWaypointController):
                 )
                 would_drive = (
                     math.hypot(target[0] - x, target[1] - y)
-                    > POSITION_TOLERANCE
+                    > self.motion.position_tolerance
                     and (
                         self.motion.turn_complete
                         or abs(error) <= HEADING_TOLERANCE

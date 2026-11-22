@@ -16,6 +16,7 @@ from std_msgs.msg import String
 
 from .waypoint_motion import (
     CONTROL_PERIOD,
+    FINAL_POSITION_TOLERANCE,
     POSITION_TOLERANCE,
     WaypointMotion,
     wrap_angle,
@@ -145,6 +146,7 @@ class EKFWaypointController(Node):
         self.get_logger().info(
             'EKF waypoint controller started: '
             f'position tolerance={POSITION_TOLERANCE:.2f}m, '
+            f'final waypoint tolerance={FINAL_POSITION_TOLERANCE:.3f}m, '
             f'pose timeout={self.pose_timeout:.2f}s, '
             f'turn pulses={self.turn_chunk_duration:.2f}s with '
             f'{self.turn_pause_duration:.2f}s pauses. '
