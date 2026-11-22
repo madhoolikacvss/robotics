@@ -3,23 +3,23 @@
 import math
 
 WORKSPACE_TAGS = {
-    'tag_3': {'side': 'right', 'pose': (2.20, 0.84, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
-    'tag_2': {'side': 'right', 'pose': (2.20, 2.05, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
-    'tag_0': {'side': 'bottom', 'pose': (0.37, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
-    'tag_1': {'side': 'bottom', 'pose': (1.33, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
-    'tag_4': {'side': 'top', 'pose': (1.8, 2.79, 0.15, math.pi / 2, 0.0, 0.0)},
-    'tag_8': {'side': 'top', 'pose': (0.21, 2.57, 0.15, math.pi / 2, 0.0, 0.0)},
-    'tag_7': {'side': 'left', 'pose': (0.0, 0.75, 0.15, math.pi / 2, 0.0, math.pi / 2)},
+    'tag_3': {'side': 'right', 'pose': (2.44, 0.895, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
+    'tag_2': {'side': 'right', 'pose': (2.44, 1.985, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
+    'tag_0': {'side': 'bottom', 'pose': (0.755, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
+    'tag_1': {'side': 'bottom', 'pose': (1.635, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
+    'tag_4': {'side': 'top', 'pose': (1.8, 2.44, 0.15, math.pi / 2, 0.0, 0.0)},
+    'tag_8': {'side': 'top', 'pose': (0.21, 2.44, 0.15, math.pi / 2, 0.0, 0.0)},
+    'tag_7': {'side': 'left', 'pose': (0.0, 1.3, 0.15, math.pi / 2, 0.0, math.pi / 2)},
     # i dont have these tgas rn, so just place holders
-    'tag_9': {'side': 'left', 'pose': (0.0, 1.5240, 0.15, math.pi / 2, 0.0, math.pi / 2)},
+    'tag_9': {'side': 'left', 'pose': (0.0, 2.02, 0.15, math.pi / 2, 0.0, math.pi / 2)},
 }
 
 OBSTACLE_TAGS = {
-    'tag_5': {'side': 'right', 'pose': (1.24, 1.26, 0.15, math.pi / 2, 0.0, math.pi / 2)},
-    'tag_6': {'side': 'bottom', 'pose': (0.99, 0.99, 0.15, math.pi / 2, 0.0, 0.0)},
+    'tag_5': {'side': 'right', 'pose': (1.26, 1.36, 0.15, math.pi / 2, 0.0, math.pi / 2)},
+    'tag_6': {'side': 'bottom', 'pose': (1.04, 1.19, 0.15, math.pi / 2, 0.0, 0.0)},
     # i dont have these tgas rn, so just place holders
-    'tag_10': {'side': 'left', 'pose': (0.69, 1.26, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
-    'tag_11': {'side': 'top', 'pose': (0.99, 1.34, 0.15, math.pi / 2, 0.0, math.pi)},
+    'tag_10': {'side': 'left', 'pose': (0.82, 1.36, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
+    'tag_11': {'side': 'top', 'pose': (1.04, 1.49, 0.15, math.pi / 2, 0.0, math.pi)},
 }
 
 if WORKSPACE_TAGS.keys() & OBSTACLE_TAGS.keys():
