@@ -4,7 +4,7 @@ import math
 
 WORKSPACE_TAGS = {
     'tag_3': {'side': 'right', 'pose': (2.44, 0.895, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
-    'tag_2': {'side': 'right', 'pose': (2.44, 1.985, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
+    'tag_2': {'side': 'right', 'pose': (2.44, 2.26, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
     'tag_0': {'side': 'bottom', 'pose': (0.755, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
     'tag_1': {'side': 'bottom', 'pose': (1.635, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
     'tag_4': {'side': 'top', 'pose': (1.8, 2.44, 0.15, math.pi / 2, 0.0, 0.0)},
