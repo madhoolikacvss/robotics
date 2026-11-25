@@ -9,10 +9,16 @@ Usage:
 
 import sys
 import csv
+from pathlib import Path
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+# Import the local ROS-independent HW4 planning package.
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'hw4'))
+from hw4.map_geometry import OBSTACLE
 
 
 PLOT_INTERVAL = 0.5  # seconds between plotted robot positions
@@ -91,6 +97,18 @@ def main():
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
+    # ---- Obstacle measured from the tag map ----
+    ax.add_patch(Rectangle(
+        (OBSTACLE.x_min, OBSTACLE.y_min),
+        OBSTACLE.x_max - OBSTACLE.x_min,
+        OBSTACLE.y_max - OBSTACLE.y_min,
+        facecolor='#475569',
+        edgecolor='#334155',
+        linewidth=2,
+        zorder=2,
+        label='Physical obstacle',
+    ))
+
     # ---- RRT waypoint path from the recorded run ----
     wpx = waypoints[:, 0]
     wpy = waypoints[:, 1]
@@ -122,11 +140,10 @@ def main():
     ax.set_title('RRT waypoints and robot trajectory (0.5 s sampling)')
     ax.legend(loc='best')
 
-    all_x = np.concatenate([wpx, xs_s])
-    all_y = np.concatenate([wpy, ys_s])
-    pad = 0.2
-    ax.set_xlim(all_x.min() - pad, all_x.max() + pad)
-    ax.set_ylim(all_y.min() - pad, all_y.max() + pad)
+    # Keep the full physical map in view; do not expand or inset the limits
+    # from the recorded trajectory or waypoint data.
+    ax.set_xlim(0.0, 2.44)
+    ax.set_ylim(0.0, 2.44)
 
     plt.tight_layout()
     plt.savefig('rrt_trajectory_plot.png', dpi=150)

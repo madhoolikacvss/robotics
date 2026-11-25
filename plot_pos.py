@@ -11,6 +11,7 @@ import sys
 import csv
 from pathlib import Path
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import numpy as np
 
 # Import the local ROS-independent HW4 planning package.
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / 'hw4'))
 from hw4.visibility_graph import build_visibility_graph
 from hw4.dijkstra import shortest_path
 from hw4.path_waypoints import path_to_waypoints
+from hw4.map_geometry import OBSTACLE
 
 
 PLOT_INTERVAL = 0.5   # seconds between plotted robot positions
@@ -73,6 +75,18 @@ def main():
 
     fig, ax = plt.subplots(figsize=(7, 7))
 
+    # ---- Physical obstacle measured from the tag map ----
+    ax.add_patch(Rectangle(
+        (OBSTACLE.x_min, OBSTACLE.y_min),
+        OBSTACLE.x_max - OBSTACLE.x_min,
+        OBSTACLE.y_max - OBSTACLE.y_min,
+        facecolor='#475569',
+        edgecolor='#334155',
+        linewidth=2,
+        zorder=2,
+        label='Physical obstacle',
+    ))
+
     # ---- Current Dijkstra waypoint path ----
     wpx = waypoints[:, 0]
     wpy = waypoints[:, 1]
@@ -103,12 +117,8 @@ def main():
     ax.set_ylabel('y [m]')
     ax.set_title('Dijkstra path and robot trajectory (0.5 s sampling)')
     ax.legend(loc='best')
-
-    all_x = np.concatenate([wpx, xs_s])
-    all_y = np.concatenate([wpy, ys_s])
-    pad = 0.2
-    ax.set_xlim(all_x.min() - pad, all_x.max() + pad)
-    ax.set_ylim(all_y.min() - pad, all_y.max() + pad)
+    ax.set_xlim(0.0, 2.44)
+    ax.set_ylim(0.0, 2.44)
 
     plt.tight_layout()
     plt.savefig('trajectory_plot.png', dpi=150)
