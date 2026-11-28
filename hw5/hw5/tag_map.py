@@ -11,20 +11,18 @@ import math
 
 
 WORKSPACE_TAGS = {
-    'tag_3': {'side': 'right', 'pose': (2.44, 0.895, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
-    'tag_2': {'side': 'right', 'pose': (2.44, 1.99, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
-    'tag_0': {'side': 'bottom', 'pose': (0.755, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
-    'tag_1': {'side': 'bottom', 'pose': (1.635, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
-    'tag_4': {'side': 'top', 'pose': (1.8, 2.44, 0.15, math.pi / 2, 0.0, 0.0)},
-    'tag_8': {'side': 'top', 'pose': (0.21, 2.44, 0.15, math.pi / 2, 0.0, 0.0)},
-    'tag_7': {'side': 'left', 'pose': (0.0, 1.3, 0.15, math.pi / 2, 0.0, math.pi / 2)},
-    # Placeholder measurement copied from HW4; replace with the real pose.
-    'tag_9': {'side': 'left', 'pose': (0.0, 2.02, 0.15, math.pi / 2, 0.0, math.pi / 2)},
-    # New placeholder tags: replace their along-wall coordinates if needed.
-    'tag_10': {'side': 'left', 'pose': (0.0, 0.65, 0.15, math.pi / 2, 0.0, math.pi / 2)},
-    'tag_11': {'side': 'right', 'pose': (2.44, 1.45, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
-    'tag_12': {'side': 'bottom', 'pose': (1.20, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
-    'tag_13': {'side': 'top', 'pose': (1.20, 2.44, 0.15, math.pi / 2, 0.0, 0.0)},
+    'tag_8': {'side': 'right', 'pose': (2.24, 0.33, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
+    'tag_9': {'side': 'right', 'pose': (2.17, 2.06, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
+    'tag_10': {'side': 'right', 'pose': (2.17, 1.10, 0.15, math.pi / 2, 0.0, -math.pi / 2)},
+    'tag_4': {'side': 'bottom', 'pose': (1.99, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
+    'tag_5': {'side': 'bottom', 'pose': (1.22, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
+    'tag_6': {'side': 'bottom', 'pose': (0.33, 0.0, 0.15, math.pi / 2, 0.0, math.pi)},
+    'tag_0': {'side': 'top', 'pose': (0.29, 2.56, 0.15, math.pi / 2, 0.0, 0.0)},
+    'tag_1': {'side': 'top', 'pose': (1.69, 2.56, 0.15, math.pi / 2, 0.0, 0.0)},
+    'tag_2': {'side': 'top', 'pose': (0.94, 2.56, 0.15, math.pi / 2, 0.0, 0.0)},
+    'tag_7': {'side': 'left', 'pose': (0.0, 1.53, 0.15, math.pi / 2, 0.0, math.pi / 2)},
+    'tag_12': {'side': 'left', 'pose': (0.0, 0.6, 0.15, math.pi / 2, 0.0, math.pi / 2)},
+    'tag_11': {'side': 'left', 'pose': (0.0, 2.21, 0.15, math.pi / 2, 0.0, math.pi / 2)},
 }
 
 TAG_POSES_WORLD = {
