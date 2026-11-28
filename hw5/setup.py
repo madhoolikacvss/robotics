@@ -24,6 +24,8 @@ setup(
             'known_tag_localizer = hw5.known_tag_localizer:main',
             'robot_position_logger = hw5.robot_position_logger:main',
             'coverage_path = hw5.coverage_path:main',
+            'coverage_waypoint_controller = '
+            'hw5.coverage_waypoint_controller:main',
         ],
     },
 )

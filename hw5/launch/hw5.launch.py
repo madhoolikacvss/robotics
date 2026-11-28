@@ -1,10 +1,8 @@
-"""Launch HW5 fixed-tag localization and position logging.
-
-This launch does not move the robot; the coverage controller will be added
-separately after the coverage path is designed.
-"""
+"""Launch HW5 fixed-tag localization, coverage control, and pose logging."""
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from hw5.map_geometry import START
@@ -13,6 +11,10 @@ from hw5.map_geometry import START
 def generate_launch_description():
     frame = 'hw5_map'
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'visibility', default_value='false',
+            description='Show the coverage path, tags, and safe boundary.',
+        ),
         Node(
             package='hw5', executable='robot_position_logger',
             name='hw5_robot_position_logger', output='screen',
@@ -25,6 +27,17 @@ def generate_launch_description():
                 'initial_x': START[0],
                 'initial_y': START[1],
                 'initial_yaw': 0.0,
+            }],
+        ),
+        Node(
+            package='hw5', executable='coverage_waypoint_controller',
+            name='coverage_waypoint_controller', output='screen',
+            parameters=[{
+                'world_frame': frame,
+                'position_log_path': 'hw5_robot_position.csv',
+                'waypoint_log_path': 'hw5_waypoint_results.csv',
+                'tag_position_log_path': 'hw5_tag_positions.csv',
+                'visibility': LaunchConfiguration('visibility'),
             }],
         ),
     ])
